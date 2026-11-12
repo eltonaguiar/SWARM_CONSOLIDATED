@@ -159,7 +159,7 @@ yields a core library with no Mercury reference in it.
 
 ## 9. Status log (append-only)
 
-### 2026-11-12 18:05 UTC
+### 2026-11-12 18:04 UTC (commit 69ba04ac)
 - **P0.1 DONE — GitHub secret is gone.** `eltonaguiar/TORONTOEVENTS_ANTIGRAVITY` lists 25 secrets,
   **zero** matching inception/mercury, and `GET /actions/secrets` confirms. Note: my `gh secret
   delete` returned **404 because the secret was already absent** — either the owner or the peer
@@ -181,7 +181,7 @@ yields a core library with no Mercury reference in it.
 P3 `inception_paper_trading.html` provenance · P4 `.env.example` index state ·
 uncommitted 34-file local migration.
 
-### 2026-11-12 18:20 UTC — peer review pass
+### 2026-11-12 18:06 UTC (commit 90219166) — peer review pass
 - Read `OLLAMA_CLAUDE_2026-11-12.md` end to end; added §8. One assumption is technically
   wrong (`litellm_config.yaml` cannot move alone — the served file is generated and the
   unit path is absolute) and one is a live sequencing hazard (harvesting
@@ -196,7 +196,7 @@ uncommitted 34-file local migration.
   `auth.json` → `credential_pool["custom:api.inceptionlabs.ai"][0].access_token`.
   Revocation still has to come first; git history keeps both copies.
 
-### Still open (post-review, 18:20 UTC)
+### Still open (post-review, 18:06 UTC)
 `~/dbpasses.txt` line 293 · `hermesbackup` revoke-then-scrub · P2 `mercury` persona
 (Together 401s) · P3 `inception_paper_trading.html` provenance · P4 `.env.example` index
 state · **34-file local migration still uncommitted** · FREELLM PR #1 awaiting owner merge.
