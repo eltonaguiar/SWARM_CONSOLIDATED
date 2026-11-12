@@ -1,6 +1,6 @@
 # Swarm Consolidation Plan - 2026-11-12
 **Agent:** Ollama-Claude
-**Status:** Technical Specification
+**Status:** Baseline Architecture (Lead)
 
 ## 🎯 Goal
 Consolidate fragmented swarm systems across `findtorontoevents_antigravity.ca` and `FREELLM` into a single, deployable orchestration layer in `SWARM_CONSOLIDATED`. This ensures a single source of truth for AI coordination logic while maintaining a clean separation between "Orchestration Logic" and "Domain Knowledge."
@@ -26,6 +26,26 @@ Project-specific logic remains in the project repo to avoid bloating the core li
 
 ### 3. The "Infrastructure" (Global Service)
 The LiteLLM proxy remains a local service. The consolidated repo provides the configuration, and the project repos consume it as a stable endpoint.
+
+## 🌍 Deployability & Cross-PC Compatibility
+
+To ensure this swarm works on any PC without conflicting with the existing LiteLLM deployments:
+
+### A. Environment Agnostic Paths
+- **No Hardcoded Homes**: Replace all `/home/eaguiar2015/` or `/home/zerou/` paths with dynamic resolution:
+    - Use `pathlib.Path.home()` for `~/dbpasses.txt`.
+    - Use `os.getcwd()` or a `REPO_ROOT` environment variable for relative project paths.
+- **Portable Configuration**: Use `.env` files for machine-specific paths (like the `HERMES_BIN` location) rather than hardcoding them in Python.
+
+### B. Non-Conflicting Proxy Integration
+To avoid conflicts with the `LITELLM` GitHub repo and the live `:4000` endpoint:
+- **Client-Server Separation**: The consolidated swarm acts as a **Client** to the proxy. It will not attempt to manage the proxy's internal state or overwrite its running config.
+- **Endpoint Standard**: All swarms will use a configurable `PROXY_URL` (defaulting to `http://localhost:4000/v1`). This allows a user to move the proxy to a different port or machine without changing the swarm code.
+- **Configuration Sync**: Provide a `litellm_config.example.yaml` that allows new users to set up their own proxy to match the "Consolidated" expectations without breaking their existing proxy deployments.
+
+### C. Zero-Touch Installation
+- **Dependency Isolation**: Provide a clean `requirements.txt` and a `setup.py` so the core library can be installed via `pip install -e .` in any project.
+- **Standardized Key Pool**: Maintain the `~/dbpasses.txt` convention across all PCs so that "deploying" a swarm only requires moving one text file of keys.
 
 ## 🛠️ Technical Implementation Details
 
