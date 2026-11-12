@@ -12,9 +12,9 @@ This repo will host the a-priori generic tools that can be used by any project.
 - **Transport Layer**: `api_consult.py` $\rightarrow$ `core/transport.py` (Unified API routing).
 - **Worker Layer**: `worker_runner.py` $\rightarrow$ `core/worker.py` (Universal agent adapter).
 - **Coordination Primitives**: 
-    - `CombineTeam` (Consensus aggregation).
-    - `DebateTeam` (Adversarial pressure-testing).
-    - `FileTeam` (Distributed file processing).
+    - `CombineTeam` $\rightarrow$ `core/combine_team.py` (Consensus aggregation).
+    - `DebateTeam` $\rightarrow$ `core/debate_team.py` (Adversarial pressure-testing).
+    - `FileTeam` $\rightarrow$ `core/file_team.py` (Distributed file processing).
 - **Meta-Orchestration**: `meta_swarm_orchestrator.py` $\rightarrow$ `core/meta_orchestrator.py` (Self-improvement, Thompson sampling, quality scoring).
 - **Proxy Management**: `litellm_config.yaml` and proxy start scripts to manage `localhost:4000/v1`.
 
@@ -58,7 +58,7 @@ To avoid conflicts with the `LITELLM` GitHub repo and the live `:4000` endpoint:
 
 #### Phase 1: Extraction (The "Harvest")
 - [x] Migrate `api_consult.py` and `worker_runner.py` from `antigravity.ca` $\rightarrow$ `SWARM_CONSOLIDATED`.
-- [ ] Migrate `CombineTeam` and `DebateTeam` from `FREELLM` $\rightarrow$ `SWARM_CONSOLIDATED`.
+- [x] Migrate `CombineTeam` and `DebateTeam` from `FREELLM` $\rightarrow$ `SWARM_CONSOLIDATED`.
 - [ ] Migrate `meta_swarm_orchestrator.py` and V2 core from `antigravity.ca` $\rightarrow$ `SWARM_CONSOLIDATED`.
 
 #### Phase 2: Standardization
