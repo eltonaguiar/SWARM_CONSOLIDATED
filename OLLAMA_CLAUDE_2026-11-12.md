@@ -28,8 +28,8 @@ Consolidate fragmented swarm systems across `findtorontoevents_antigravity.ca` a
 
 - **`tools/ai_menu.sh`**: Update the `s|S` (swarm) case to launch a new `swarm_picker.py` (to be created) that uses the consolidated library.
 - **`.ruflo/orchestrator.py`**: Modify imports to use `SWARM_CONSOLIDATED.core` and update `HERMES_BIN` to `Path.home() / ".hermes/hermes-agent/hermes"`.
-- **`tools/swarm/swarm_run.py`**: Refactor to use `SWARM_CONSOLIDATED.core.transport`.
-- **`tools/swarm_v2/swarms/core/llm_client.py`**: **DEPRECATE**. Logic will be moved to `SWARM_CONSOLIDATED.core.transport`.
+- **`tools/swarm/swarm_run.py`**: Refactor to use `SWARM_CONSOLIDATED.core.transport`. **Coordination: Sync with Freebuff before overwriting to preserve engine-list edits.**
+- **`tools/swarm_v2/swarms/core/llm_client.py`**: **DEPRECATE**. Logic will be moved to `SWARM_CONSOLIDATED.core.transport`. **Coordination: Sequence after Freebuff's migration commits.**
 
 ## 🌍 Deployability & Cross-PC Compatibility
 
@@ -39,7 +39,8 @@ Consolidate fragmented swarm systems across `findtorontoevents_antigravity.ca` a
 
 ### B. Non-Conflicting Proxy Integration
 - **Action**: Standardize `PROXY_URL = os.environ.get("SWARM_PROXY_URL", "http://localhost:4000/v1")` across all core modules.
-- **Target**: All files in `SWARM_CONSOLIDATED/core/`.
+- **Liveness Probe**: Use `/health/readiness` instead of `/health` to avoid false negatives.
+- **Default Aliases**: Use `ULTRA_FREE_CLOUD_FAST` and `ULTRA_FREE_NVIDIA` instead of legacy `free-mode-fast`.
 
 ## 🛠️ Execution Roadmap
 
@@ -55,10 +56,13 @@ Consolidate fragmented swarm systems across `findtorontoevents_antigravity.ca` a
 - [ ] **Dependency Manifest**: Create `SWARM_CONSOLIDATED/requirements.txt` including `rich`, `prompt_toolkit`, and `urllib3`.
 
 ### Phase 3: Wiring & User Experience (The "Final Mile")
-- [ ] **Swarm Picker**: Create `SWARM_CONSOLIDATED/cli/swarm_picker.py` as a guided interface.
+- [ ] **Swarm Picker**: Create `SWARM_CONSOLIDATED/cli/swarm_picker.py` as a guided interface. 
+    - **Requirement**: Must resolve aliases from `GET /v1/models` at runtime.
+    - **Row addition**: "Cheap/Free-only" mode.
 - [ ] **AI_MENU Integration**: Update `findtorontoevents_antigravity.ca/tools/ai_menu.sh` to invoke the new picker.
 - [ ] **Verification**: Run a "Consolidated Smoke Test" (1 Combine, 1 Debate, 1 V2-Coding) using the new paths.
 
 ## ⚠️ Constraints & Risks
 - **Pathing**: If `SWARM_CONSOLIDATED` is not installed as a package, project repos must use `sys.path.append` to the consolidated root.
 - **Proxy Drift**: Changes in LiteLLM proxy aliases must be reflected in `core/combine_team.py` defaults.
+- **Overlap**: High risk of clash with Freebuff on `swarm_run.py` and `llm_client.py`. Coordination via `/tmp/` is mandatory.
