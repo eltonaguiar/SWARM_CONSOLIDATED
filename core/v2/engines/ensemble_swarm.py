@@ -7,8 +7,8 @@ import logging
 import statistics
 from typing import Any
 
-from swarms.core.base_orchestrator import BaseOrchestrator
-from swarms.core.models import (
+from ..base_orchestrator import BaseOrchestrator
+from ..models import (
     AgentRole,
     EnsembleResult,
     MemoryEntry,

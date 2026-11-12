@@ -13,8 +13,8 @@ import logging
 from datetime import datetime
 from typing import Any, Optional
 
-from swarms.core.base_orchestrator import BaseOrchestrator
-from swarms.core.models import (
+from ..base_orchestrator import BaseOrchestrator
+from ..models import (
     AgentConfig,
     AgentRole,
     HierarchicalSignal,

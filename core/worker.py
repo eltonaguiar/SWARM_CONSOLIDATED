@@ -6,7 +6,7 @@ result + raw sidecar. Logging/timing via swarm_log.CallTimer.
 
 Supported engines:
     CLI:  claude, gemini, opencode, kilo, copilot, agent (Cursor), kimi (Moonshot), openclaude
-    API:  deepseek, cerebras, xai, ollama_cloud, ollama_local, openrouter (driven via tools/swarm/api_consult.py)
+    API:  deepseek, cerebras, xai, inception, ollama_cloud, ollama_local, openrouter (driven via tools/swarm/api_consult.py)
 
 Excluded: codex (OpenAI Codex CLI — disabled 2026-05-05 per user request), freebuff (PTY engine — REMOVED 2026-05-04), codebuff (TUI-only + out of credits).
 

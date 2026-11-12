@@ -6,11 +6,11 @@ import asyncio
 import logging
 from typing import Any, Optional
 
-from swarms.core.base_orchestrator import BaseOrchestrator
-from swarms.core.llm_client import LLMClient
-from swarms.core.memory import SwarmMemory
-from swarms.core.messaging import MessageBus
-from swarms.core.models import (
+from ..base_orchestrator import BaseOrchestrator
+from ..llm_client import ConsolidatedLLMClient as LLMClient
+from ..memory import SwarmMemory
+from ..messaging import MessageBus
+from ..models import (
     AgentConfig,
     AgentRole,
     MemoryEntry,
@@ -21,8 +21,8 @@ from swarms.core.models import (
     SwarmTask,
     TaskStatus,
 )
-from swarms.core.registry import AgentRegistry
-from swarms.core.safety import SafetyEnforcer
+from ..registry import AgentRegistry
+from ..safety import SafetyEnforcer
 from swarms.workers.researcher import ResearcherWorker
 
 logger = logging.getLogger(__name__)
