@@ -3,7 +3,7 @@
 **Agent:** Freebuff (Buffy) — CLI agent
 **Project of record:** `findtorontoevents_antigravity.ca` (branch `job-search-2026-11-03-ledger`)
 **Peer plan:** `OLLAMA_CLAUDE_2026-11-12.md` (Ollama/Claude agent)
-**Status:** active — P0 in progress, P1 queued
+**Status:** active — P0.1 done (secret gone), P1 PR open, P2–P4 open
 
 ---
 
@@ -55,19 +55,22 @@ Everything else in the repo is untouched by me.
 ## 4. Queue
 
 **P0 — kill the credential (in flight)**
-1. Delete GitHub secret `INCEPTION_API_KEY` from
-   `eltonaguiar/TORONTOEVENTS_ANTIGRAVITY` — *owner approved 2026-11-12*. No workflow
-   references it any more, so removal is inert.
+1. ~~Delete GitHub secret `INCEPTION_API_KEY`~~ — **DONE 2026-11-12**: the secret is
+   absent from `eltonaguiar/TORONTOEVENTS_ANTIGRAVITY` (verified with `gh secret list`
+   and `/actions/secrets`). It disappeared before my delete call, which returned 404.
 2. `~/dbpasses.txt` line 293 (`INCEPTION_AI_KEY`) + the value exported in the shell.
 3. `eltonaguiar/hermesbackup` → `auth.json` still holds the key under
    `"custom:api.inceptionlabs.ai"` (+ `config.yaml` `base_url`). This is **real
    credential material** — revoke at the dashboard before deleting copies.
 
-**P1 — `eltonaguiar/FREELLM` carries the same bug.** Confirmed still present:
+**P1 — `eltonaguiar/FREELLM`: PR OPEN, awaiting merge.** Branch
+`inception-sunset-2026-11-12`, **PR #1** (6 files, MERGEABLE/CLEAN). Was present:
 `PinSpec("PAID-MERCURY", "inception", count=1)` in `tools/litellm_dynamic_models.py`,
 the `parse_key "INCEPTION_AI_KEY"` line in `tools/start_litellm_proxy.sh`,
 `P("inception", "https://api.inceptionlabs.ai/v1", [...])` in `tools/free_provider_audit.py`,
-plus `verify_all_keys.py`, `README.md`, `litellm_config.yaml`. Same patch set applies.
+plus `verify_all_keys.py`, `README.md`, `litellm_config.yaml`. Each file re-read from the
+branch shows **0** remaining references; patched files pass `py_compile` / `bash -n`.
+**Not merged** — left for the owner to review.
 
 **P2 — `mercury` tournament persona.** `config/model_persona_mapping.json` routes
 `inception/mercury-2` via `api.together.xyz` + `TOGETHER_API_KEY` — never the Inception
@@ -114,7 +117,47 @@ rg -n -i 'inceptionlabs|INCEPTION_AI_KEY|INCEPTION_API_KEY|"inception"' tools/ .
 
 ---
 
-## 8. Status log (append-only)
+## 8. Review of the peer plan (`OLLAMA_CLAUDE_2026-11-12.md`)
+
+**Verdict:** directionally sound — one owner of orchestration logic, domain logic staying
+in project repos — but it carries four collisions with work in flight and one technically
+wrong assumption about how the proxy actually starts.
+
+1. **"Proxy Management: `litellm_config.yaml` and proxy start scripts" cannot be a
+   copy-into-core item.** On this host the proxy is a systemd user service
+   (`litellm-4000.service`) whose `ExecStart` is an absolute path, and the file it
+   actually serves is `litellm_config.runtime.yaml`, *generated at start* by
+   `tools/litellm_dynamic_models.py`. Moving `litellm_config.yaml` into
+   `SWARM_CONSOLIDATED` without moving the generator and rewriting the unit path leaves
+   the service pointing at a file that does not exist there — a **hard startup failure**,
+   not degraded routing. If the proxy config moves it must be one transaction: config +
+   generator + unit path + a restart verified through `/health/readiness`.
+2. **Extraction sequencing vs this migration — the real hazard.** Phase 1 harvests
+   `api_consult.py` and `worker_runner.py` from `antigravity.ca` into the core library.
+   Both files **contained the `inception` provider entry that I have removed locally but
+   not yet committed**. Harvesting before my migration lands copies a dead vendor into the
+   new "single source of truth", where it is far harder to find later. Ask: harvest from
+   the post-migration state, or filter `inception`/`mercury` during extraction.
+3. **`.ruflo/orchestrator.py` is a shared edit target.** Phase 3 rewrites `HERMES_BIN`
+   there; I have already changed that same file's provider set and `reviewer` engine.
+   Whoever edits second silently drops the other's change unless the diff is rebased —
+   this file needs a single owner.
+4. **"Standardize on `~/dbpasses.txt`" collides with P0.2.** I am deleting the
+   `INCEPTION_AI_KEY` entry (line 293). Any loader written afterwards must not assume that
+   key exists, and missing-key behaviour should be exercised rather than assumed.
+5. **Gap: the peer plan never mentions the Mercury sunset.** Every provider list it
+   proposes to consolidate currently carries a dead vendor. Extraction is the cheapest
+   moment to drop it; after consolidation the same string is scattered across a new repo.
+
+**Not contested:** the Core-vs-Domain split, personas/tasks staying project-side, the
+single CLI entry point, and `requirements.txt` hygiene. Those are the peer's call and my
+work does not depend on them.
+
+**Compatibility statement:** my patch is safe to extract *after* it merges — it only
+deletes entries and rewrites one docstring, so any extraction that copies files verbatim
+yields a core library with no Mercury reference in it.
+
+## 9. Status log (append-only)
 
 ### 2026-11-12 18:05 UTC
 - **P0.1 DONE — GitHub secret is gone.** `eltonaguiar/TORONTOEVENTS_ANTIGRAVITY` lists 25 secrets,
@@ -137,3 +180,23 @@ rg -n -i 'inceptionlabs|INCEPTION_AI_KEY|INCEPTION_API_KEY|"inception"' tools/ .
 `~/dbpasses.txt` line 293 · hermesbackup scrub · P2 mercury persona (Together 401s) ·
 P3 `inception_paper_trading.html` provenance · P4 `.env.example` index state ·
 uncommitted 34-file local migration.
+
+### 2026-11-12 18:20 UTC — peer review pass
+- Read `OLLAMA_CLAUDE_2026-11-12.md` end to end; added §8. One assumption is technically
+  wrong (`litellm_config.yaml` cannot move alone — the served file is generated and the
+  unit path is absolute) and one is a live sequencing hazard (harvesting
+  `api_consult.py` / `worker_runner.py` before my migration lands copies the dead provider
+  into the core library).
+- Repo state: `main` is the only branch; no new peer files since commit `86726334`.
+- Corrected my own P0/P1 status above rather than only appending: P0.1 is done, P1 is a
+  PR awaiting merge. Leaving stale "in flight" text in a coordination doc is how two
+  agents end up doing the same work twice.
+- `hermesbackup` detail for the record: the plaintext key sits on `config.yaml` line 435
+  in the `base_url: https://api.inceptionlabs.ai/v1` block, and the same value appears in
+  `auth.json` → `credential_pool["custom:api.inceptionlabs.ai"][0].access_token`.
+  Revocation still has to come first; git history keeps both copies.
+
+### Still open (post-review, 18:20 UTC)
+`~/dbpasses.txt` line 293 · `hermesbackup` revoke-then-scrub · P2 `mercury` persona
+(Together 401s) · P3 `inception_paper_trading.html` provenance · P4 `.env.example` index
+state · **34-file local migration still uncommitted** · FREELLM PR #1 awaiting owner merge.
