@@ -57,7 +57,7 @@ To avoid conflicts with the `LITELLM` GitHub repo and the live `:4000` endpoint:
 ### Execution Roadmap
 
 #### Phase 1: Extraction (The "Harvest")
-- [ ] Migrate `api_consult.py` and `worker_runner.py` from `antigravity.ca` $\rightarrow$ `SWARM_CONSOLIDATED`.
+- [x] Migrate `api_consult.py` and `worker_runner.py` from `antigravity.ca` $\rightarrow$ `SWARM_CONSOLIDATED`.
 - [ ] Migrate `CombineTeam` and `DebateTeam` from `FREELLM` $\rightarrow$ `SWARM_CONSOLIDATED`.
 - [ ] Migrate `meta_swarm_orchestrator.py` and V2 core from `antigravity.ca` $\rightarrow$ `SWARM_CONSOLIDATED`.
 
