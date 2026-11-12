@@ -157,7 +157,132 @@ work does not depend on them.
 deletes entries and rewrites one docstring, so any extraction that copies files verbatim
 yields a core library with no Mercury reference in it.
 
-## 9. Status log (append-only)
+## 9. Deployable swarm on other PCs — portability + non-conflict contract
+
+This section exists because the swarm is useless if it only runs here. It defines what
+"deployable" means, and the rules that keep it from colliding with the deployable LiteLLM
+repo and with `http://localhost:4000/v1`.
+
+### 9.1 The endpoint is a contract, not a dependency to copy
+
+`http://localhost:4000/v1` is the only LLM URL any swarm component may know. Clients and
+workers send an OpenAI-shaped request with a **placeholder** `api_key` (real auth happens
+upstream) and a **model alias**, never a provider URL or a provider-specific model id.
+
+- `hybrid-model present in served aliases: **no** (measured 2026-11-12T18:08Z)`. Do not document an alias to another machine without re-checking
+  `GET /v1/models` on that machine; the alias set changes as free pools move.
+- Alias names are the stable surface. `ULTRA_*` groups and their fallback chains live in the
+  proxy config; a swarm that hardcodes `groq/llama-3.1-8b` has bypassed rotation and will rot.
+
+### 9.2 Ownership: one proxy source, three consumers
+
+| Artefact | Owner (single source) | Everyone else |
+|---|---|---|
+| `litellm_config.yaml`, `start_litellm_proxy.sh`, `litellm_dynamic_models.py` | the deployable LiteLLM repo (`eltonaguiar/FREELLM`) | **read-only consumers** — never vendor a copy |
+| `~/.config/systemd/user/litellm-4000.service` | each machine, never in git | unit is per-host: `WorkingDirectory` is an absolute path and must be rewritten per PC |
+| swarm engine code | `SWARM_CONSOLIDATED` | projects import it, do not fork it |
+| persona/prompt/domain content | each project repo | core lib stays generic |
+
+**This is why the peer plan's "move `litellm_config.yaml` into SWARM_CONSOLIDATED" is
+wrong**: there would then be a *third* copy (FREELLM already holds one, antigravity holds
+one). Two copies already drift — a config comment in antigravity still says the provider
+set was verified 2026-05-25. Correct shape: `SWARM_CONSOLIDATED` pins a **commit sha** of
+FREELLM and documents the contract; it does not carry the file.
+
+### 9.3 Precedence rule when a swarm worker needs a model
+
+1. **Local proxy `:4000`** — default. Rotation, cooldown and 429 handling happen once, in
+   one place, for every agent on the box.
+2. **Direct env key** — only for a provider the proxy does not front, or for a probe.
+3. **CLI engine** (`claude`, `gemini`, `kilo`, `opencode`, `ollama`) — when the answer needs
+   tool use / file access rather than a chat completion.
+
+Never let (2) and (1) hold the same provider key by default: that turns one quota into two
+independently-throttled consumers and makes "why am I rate-limited" unanswerable.
+
+### 9.4 Portability contract (what already holds, what must hold)
+
+Measured 2026-11-12 against the real deploy surface:
+
+- **Zero** `/home/<user>` hardcodes in `start_litellm_proxy.sh`, `litellm_dynamic_models.py`,
+  `litellm_config.yaml`, `.env.example`, `tools/swarm/*.py`. Paths derive from repo root.
+- The **only** absolute path is the systemd unit's `WorkingDirectory` — per-machine by
+  design, so a new PC writes its own unit rather than inheriting one.
+- The launcher is **fully env-overridable**: `PORT` (default 4000), `CONFIG`, `KEYS_FILE`
+  (default `$HOME/dbpasses.txt`), `PROXY_LOG`, `DYNAMIC_LOG`, `LITELLM_DYNAMIC_MODELS`,
+  `LITELLM_DYNAMIC_PROVIDERS`, `LITELLM_START_LOCK`, `VERIFY_BOUND_PORT`,
+  `VERIFY_BOUND_PORT_TIMEOUT`, `WARM_LOCAL_FAST`, `ALLOW_PAID_SPILLOVER`. No flag is
+  required to run it on a second machine.
+- Keys resolve in this order: **process env → repo-root `.env`** (`config_loader.load_dotenv`,
+  supports `${VAR}` substitution) **→ `~/dbpasses.txt`** (launcher only). A new PC therefore
+  needs only a `.env`; the dbpasses file is a local convenience, not a requirement.
+- `systemd` is a **convenience supervisor, not a dependency**: `--background` and foreground
+  both work. Do not let the plan assume systemd exists on Windows/macOS.
+- The generated `litellm_config.runtime.yaml` must stay **per-checkout and gitignored**.
+  It is written into the repo root on purpose (LiteLLM resolves `callbacks:` relative to the
+  config's directory, so a `/tmp` config breaks the import and the proxy exits), which means
+  two PCs sharing a synced checkout will thrash that file.
+
+**Known gaps that block a clean second-PC deploy** (from `tools/swarm/PORTING.md`, still open):
+
+- `port_in_use()` shells out to `ss` — Linux only. Needs a Python `socket.connect_ex` fallback
+  so the "port bound but unhealthy → refuse to start" guard works on macOS/Windows.
+- `flock` serialization is `command -v`-guarded: on a machine **without** flock the guard is
+  silently skipped, restoring the exact double-start race that produced random-port ghosts.
+  Needs a lockfile + stale-pid fallback.
+- Logs default to `/tmp/*` — fine on POSIX, wrong on Windows. Drive them from `PROXY_LOG`/
+  `DYNAMIC_LOG`/`RESTART_HISTORY` in the deploy doc instead of assuming `/tmp`.
+- The PR pipeline (`swarm_dispatch.ps1`, `comment_poster.ps1`) is PowerShell-only; the bash
+  port is unwritten. Python drivers are already cross-platform.
+- `swarm_runs/` and the sqlite session sidecar are per-checkout (path derived from
+  `Path(__file__).resolve().parents[N]`); do not sync them between machines.
+
+### 9.5 Multi-PC topology — how machines cooperate without fighting
+
+- **Every PC runs its own proxy on its own `:4000`.** Loopback only. No machine starts a
+  proxy on behalf of another, and no proxy is exposed on the LAN — that would put one key
+  pool and one cooldown table in the path of several machines and make failures
+  unattributable.
+- **Cross-machine fan-out goes over the existing cross-PC gateway skills**
+  (`cross-pc-sendmsg`, `cross-pc-checkmsg`, `cross-pc-health`), not by sharing a proxy port.
+  The swarm must degrade gracefully when the gateway is absent: it is an optional transport.
+- **One start per host.** The launcher's lock is per-port, so two agents on the *same* PC
+  serialize correctly; two PCs cannot collide by construction.
+- **Restart discipline** (learned the hard way today): a proxy restart is a 40s+ outage while
+  discovery runs. Any agent restarting `:4000` announces it in `SWARM_CONSOLIDATED` with UTC
+  time + PID first, because a concurrent restart is the documented cause of ghost instances.
+
+### 9.6 Deploy checklist — new PC in ~10 minutes
+
+```bash
+# 1. clone the deployable LiteLLM repo (the single source for proxy files)
+git clone <FREELLM> && cd FREELLM
+python3 -m venv .venv && .venv/bin/python -m pip install 'litellm[proxy]'
+# 2. keys: repo-root .env is enough; dbpasses.txt is optional
+cp .env.example .env && $EDITOR .env        # fill only the providers you have
+# 3. start (no systemd required)
+PORT=4000 bash tools/start_litellm_proxy.sh --background
+# 4. verify by contract, not by vibes
+curl -s localhost:4000/health/readiness                      # 200
+curl -s localhost:4000/v1/models | grep -c '"id"'            # alias count
+# 5. only then point the swarm at it
+export OPENAI_BASE_URL=http://localhost:4000/v1
+python tools/swarm/config_loader.py                          # shows which key each engine resolved
+python tools/swarm/swarm_run.py --prompt-file probe.md --engines deepseek,cerebras
+```
+
+Acceptance for "works on another PC": step 4 returns 200 **and** a real completion returns
+non-empty content, **and** `config_loader.py` reports no missing keys for the engines used.
+A 200 readiness alone is not acceptance — readiness only proves the router booted.
+
+### 9.7 What my Mercury patch changes for deployability: nothing
+
+The patch deletes provider entries and rewrites one docstring. It does not touch the port,
+the alias names, the fallback chains, the key-resolution order, or any client-facing name.
+A second PC deployed from the post-merge state behaves identically to one deployed today —
+except that it never probes a vendor that will not exist after 2026-12-28.
+
+## 10. Status log (append-only)
 
 ### 2026-11-12 18:04 UTC (commit 69ba04ac)
 - **P0.1 DONE — GitHub secret is gone.** `eltonaguiar/TORONTOEVENTS_ANTIGRAVITY` lists 25 secrets,
@@ -200,3 +325,15 @@ uncommitted 34-file local migration.
 `~/dbpasses.txt` line 293 · `hermesbackup` revoke-then-scrub · P2 `mercury` persona
 (Together 401s) · P3 `inception_paper_trading.html` provenance · P4 `.env.example` index
 state · **34-file local migration still uncommitted** · FREELLM PR #1 awaiting owner merge.
+
+### 2026-11-12 18:2x UTC — portability / non-conflict section added (§9)
+- Added §9: endpoint-as-contract, proxy ownership (FREELLM is the single source), the
+  1→2→3 precedence rule for model access, the measured portability contract (zero `/home/...`
+  hardcodes; only the systemd `WorkingDirectory` is absolute; fully env-overridable launcher),
+  the four known gaps that block a clean second-PC deploy (`ss`, unguarded `flock`, `/tmp`
+  logs, PowerShell-only PR pipeline), multi-PC topology, and a 10-minute deploy checklist.
+- **Consequence for the peer plan:** moving `litellm_config.yaml` into `SWARM_CONSOLIDATED`
+  would create a *third* copy of a file FREELLM already owns. §9.2 proposes the correct shape
+  instead — pin a FREELLM commit sha and document the contract, do not carry the file.
+- Measured, not assumed: alias set re-read live from `GET /v1/models` at publish time rather
+  than trusting the `hybrid-model` name in `.claude/skills/litellm-proxy/SKILL.md`.
