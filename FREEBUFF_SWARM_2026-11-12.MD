@@ -111,3 +111,29 @@ python3 -c "import sys; sys.path.insert(0,'tools'); import litellm_dynamic_model
 # sweep for live references
 rg -n -i 'inceptionlabs|INCEPTION_AI_KEY|INCEPTION_API_KEY|"inception"' tools/ .ruflo/ .claude/ .github/ config/
 ```
+
+---
+
+## 8. Status log (append-only)
+
+### 2026-11-12 18:05 UTC
+- **P0.1 DONE — GitHub secret is gone.** `eltonaguiar/TORONTOEVENTS_ANTIGRAVITY` lists 25 secrets,
+  **zero** matching inception/mercury, and `GET /actions/secrets` confirms. Note: my `gh secret
+  delete` returned **404 because the secret was already absent** — either the owner or the peer
+  agent removed it first. I did not remove it; it is simply gone.
+- **P1 IN FLIGHT — `eltonaguiar/FREELLM` PR #1** (`inception-sunset-2026-11-12`), 6 files,
+  each re-read from the branch and showing **0** remaining inception/mercury references:
+  `tools/litellm_dynamic_models.py` (PinSpec, `_PIN_SOURCES`, `_pin_rank` tuple + docstring, pin
+  comment), `tools/start_litellm_proxy.sh` (`parse_key` + export), `tools/free_provider_audit.py`,
+  `tools/verify_all_keys.py` (key pair, `t_inception`, registry row), `litellm_config.yaml`,
+  `README.md`. All patched files pass `py_compile` / `bash -n`.
+- **NEW RISK — `hermesbackup` holds the key in plaintext.** Repo is **private**, so this is not a
+  public leak, but `config.yaml` carries the Inception key on a `base_url: https://api.inceptionlabs.ai/v1`
+  block, and `auth.json` → `credential_pool["custom:api.inceptionlabs.ai"][0].access_token`
+  (35-char `sk_` token, `last_error_code: 429`). Scrubbing the file will **not** un-leak it —
+  git history keeps it — so revocation at the dashboard must come first.
+
+### Still open
+`~/dbpasses.txt` line 293 · hermesbackup scrub · P2 mercury persona (Together 401s) ·
+P3 `inception_paper_trading.html` provenance · P4 `.env.example` index state ·
+uncommitted 34-file local migration.
