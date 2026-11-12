@@ -1,75 +1,63 @@
 # Swarm Consolidation Plan - 2026-11-12
 **Agent:** Ollama-Claude
-**Status:** Baseline Architecture (Lead)
+**Status:** Phase 1 Execution (Extraction)
 
 ## 🎯 Goal
-Consolidate fragmented swarm systems across `findtorontoevents_antigravity.ca` and `FREELLM` into a single, deployable orchestration layer in `SWARM_CONSOLIDATED`. This ensures a single source of truth for AI coordination logic while maintaining a clean separation between "Orchestration Logic" and "Domain Knowledge."
+Consolidate fragmented swarm systems across `findtorontoevents_antigravity.ca` and `FREELLM` into a single, deployable orchestration layer in `SWARM_CONSOLIDATED`. 
 
-## 🏗️ Proposed Architecture
+## 🏗️ Architecture & Mapping
 
-### 1. The "Core Library" (SWARM_CONSOLIDATED)
-This repo will host the a-priori generic tools that can be used by any project.
-- **Transport Layer**: `api_consult.py` $\rightarrow$ `core/transport.py` (Unified API routing).
-- **Worker Layer**: `worker_runner.py` $\rightarrow$ `core/worker.py` (Universal agent adapter).
-- **Coordination Primitives**: 
-    - `CombineTeam` $\rightarrow$ `core/combine_team.py` (Consensus aggregation).
-    - `DebateTeam` $\rightarrow$ `core/debate_team.py` (Adversarial pressure-testing).
-    - `FileTeam` $\rightarrow$ `core/file_team.py` (Distributed file processing).
-- **Meta-Orchestration**: `meta_swarm_orchestrator.py` $\rightarrow$ `core/meta_orchestrator.py` (Self-improvement, Thompson sampling, quality scoring).
-- **Proxy Management**: `litellm_config.yaml` and proxy start scripts to manage `localhost:4000/v1`.
+### 1. The "Core Library" (`SWARM_CONSOLIDATED`)
+**Target Path: `/home/eaguiar2015/SWARM_CONSOLIDATED/core/`**
 
-### 2. The "Domain Layer" (Project Repos, e.g., antigravity.ca)
-Project-specific logic remains in the project repo to avoid bloating the core library.
-- **Personas**: `agent_personas/` (Specialist definitions).
-- **Task Files**: `tasks/` or `prompts/` (What the swarm actually does).
-- **Project-Specific Logic**: `.ruflo/orchestrator.py` (Domain-specific wrappers).
+| Original Module | Target Consolidated Path | Purpose | Status |
+| :--- | :--- | :--- | :--- |
+| `tools/swarm/api_consult.py` | `core/transport.py` | Unified API routing via LiteLLM Proxy | ✅ Done |
+| `tools/swarm/worker_runner.py` | `core/worker.py` | Universal agent adapter | ✅ Done |
+| `tools/freellm.py` (Combine) | `core/combine_team.py` | Consensus aggregation logic | ✅ Done |
+| `tools/freellm.py` (Debate) | `core/debate_team.py` | Adversarial pressure-testing | ✅ Done |
+| `tools/freellm.py` (File) | `core/file_team.py` | Distributed file processing | ✅ Done |
+| `tools/swarm_v2/meta_swarm_orchestrator.py` | `core/v2/meta_orchestrator.py` | Meta-Review & Thompson Sampling | ✅ Done |
+| `tools/swarm_v2/swarms/core/base_orchestrator.py`| `core/v2/base_orchestrator.py`| V2 Base Logic | ✅ Done |
+| `tools/swarm_v2/swarms/core/models.py` | `core/v2/models.py` | V2 Data Models | ✅ Done |
+| `tools/swarm_v2/swarms/core/registry.py` | `core/v2/registry.py` | V2 Engine Registry | ✅ Done |
 
-### 3. The "Infrastructure" (Global Service)
-The LiteLLM proxy remains a local service. The consolidated repo provides the configuration, and the project repos consume it as a stable endpoint.
+### 2. The "Domain Layer" (`findtorontoevents_antigravity.ca`)
+**These files will be modified to import from `SWARM_CONSOLIDATED` instead of local copies.**
+
+- **`tools/ai_menu.sh`**: Update the `s|S` (swarm) case to launch a new `swarm_picker.py` (to be created) that uses the consolidated library.
+- **`.ruflo/orchestrator.py`**: Modify imports to use `SWARM_CONSOLIDATED.core` and update `HERMES_BIN` to `Path.home() / ".hermes/hermes-agent/hermes"`.
+- **`tools/swarm/swarm_run.py`**: Refactor to use `SWARM_CONSOLIDATED.core.transport`.
+- **`tools/swarm_v2/swarms/core/llm_client.py`**: **DEPRECATE**. Logic will be moved to `SWARM_CONSOLIDATED.core.transport`.
 
 ## 🌍 Deployability & Cross-PC Compatibility
 
-To ensure this swarm works on any PC without conflicting with the existing LiteLLM deployments:
-
 ### A. Environment Agnostic Paths
-- **No Hardcoded Homes**: Replace all `/home/eaguiar2015/` or `/home/zerou/` paths with dynamic resolution:
-    - Use `pathlib.Path.home()` for `~/dbpasses.txt`.
-    - Use `os.getcwd()` or a `REPO_ROOT` environment variable for relative project paths.
-- **Portable Configuration**: Use `.env` files for machine-specific paths (like the `HERMES_BIN` location) rather than hardcoding them in Python.
+- **Action**: Search and replace all hardcoded paths in `SWARM_CONSOLIDATED/core/` with `pathlib.Path.home()` for `~/dbpasses.txt` and `os.getcwd()` for repo roots.
+- **Target**: Specifically `core/transport.py` and `core/v2/base_orchestrator.py`.
 
 ### B. Non-Conflicting Proxy Integration
-To avoid conflicts with the `LITELLM` GitHub repo and the live `:4000` endpoint:
-- **Client-Server Separation**: The consolidated swarm acts as a **Client** to the proxy. It will not attempt to manage the proxy's internal state or overwrite its running config.
-- **Endpoint Standard**: All swarms will use a configurable `PROXY_URL` (defaulting to `http://localhost:4000/v1`). This allows a user to move the proxy to a different port or machine without changing the swarm code.
-- **Configuration Sync**: Provide a `litellm_config.example.yaml` that allows new users to set up their own proxy to match the "Consolidated" expectations without breaking their existing proxy deployments.
+- **Action**: Standardize `PROXY_URL = os.environ.get("SWARM_PROXY_URL", "http://localhost:4000/v1")` across all core modules.
+- **Target**: All files in `SWARM_CONSOLIDATED/core/`.
 
-### C. Zero-Touch Installation
-- **Dependency Isolation**: Provide a clean `requirements.txt` and a `setup.py` so the core library can be installed via `pip install -e .` in any project.
-- **Standardized Key Pool**: Maintain the `~/dbpasses.txt` convention across all PCs so that "deploying" a swarm only requires moving one text file of keys.
+## 🛠️ Execution Roadmap
 
-## 🛠️ Technical Implementation Details
+### Phase 1: Extraction (The "Harvest") - [CURRENT]
+- [x] Migrate Basic Transport & Worker $\rightarrow$ `core/`
+- [x] Migrate Coordination Primitives (Combine/Debate/File) $\rightarrow$ `core/`
+- [x] Migrate V2 Core (Meta-Orchestrator/Registry/Models) $\rightarrow$ `core/v2/`
+- [ ] **Next**: Extract V2 Engines (`coding_swarm.py`, `research_swarm.py`) $\rightarrow$ `core/v2/engines/`.
 
-### Config & Path Mapping
-- **Key Source**: Standardize on `~/dbpasses.txt` as the authoritative source.
-- **Proxy Endpoint**: All swarms route through `http://localhost:4000/v1`.
-- **Sourcing**: Project repos will import the core library via git submodule or local python path injection.
+### Phase 2: Standardization & Cleaning
+- [ ] **Transport Unification**: Modify `core/v2/base_orchestrator.py` and related V2 files to use `core/transport.py` for all API calls.
+- [ ] **Mercury Scrub**: Verify 100% removal of `INCEPTION_API` / `mercury` references in consolidated code.
+- [ ] **Dependency Manifest**: Create `SWARM_CONSOLIDATED/requirements.txt` including `rich`, `prompt_toolkit`, and `urllib3`.
 
-### Execution Roadmap
-
-#### Phase 1: Extraction (The "Harvest")
-- [x] Migrate `api_consult.py` and `worker_runner.py` from `antigravity.ca` $\rightarrow$ `SWARM_CONSOLIDATED`.
-- [x] Migrate `CombineTeam` and `DebateTeam` from `FREELLM` $\rightarrow$ `SWARM_CONSOLIDATED`.
-- [ ] Migrate `meta_swarm_orchestrator.py` and V2 core from `antigravity.ca` $\rightarrow$ `SWARM_CONSOLIDATED`.
-
-#### Phase 2: Standardization
-- [ ] Unify the API key loading mechanism (Standardize on `~/dbpasses.txt` and environment variables).
-- [ ] Create a single, clean CLI entry point in `SWARM_CONSOLIDATED` to launch any of the swarm types.
-
-#### Phase 3: Wiring & Integration
-- [ ] Update `antigravity.ca` tools to import the consolidated library.
-- [ ] Fix `.ruflo/orchestrator.py` (update `HERMES_BIN` path to `eaguiar2015` home).
-- [ ] Enhance `AI_MENU` in `antigravity.ca` with a "Swarm Picker" goal-based matrix.
+### Phase 3: Wiring & User Experience (The "Final Mile")
+- [ ] **Swarm Picker**: Create `SWARM_CONSOLIDATED/cli/swarm_picker.py` as a guided interface.
+- [ ] **AI_MENU Integration**: Update `findtorontoevents_antigravity.ca/tools/ai_menu.sh` to invoke the new picker.
+- [ ] **Verification**: Run a "Consolidated Smoke Test" (1 Combine, 1 Debate, 1 V2-Coding) using the new paths.
 
 ## ⚠️ Constraints & Risks
-- **Proxy Stability**: Must ensure that moving the config doesn't break the `localhost:4000` routing.
-- **Dependency Hell**: Must maintain a clean `requirements.txt` in `SWARM_CONSOLIDATED` that doesn't conflict with project-specific deps.
+- **Pathing**: If `SWARM_CONSOLIDATED` is not installed as a package, project repos must use `sys.path.append` to the consolidated root.
+- **Proxy Drift**: Changes in LiteLLM proxy aliases must be reflected in `core/combine_team.py` defaults.
