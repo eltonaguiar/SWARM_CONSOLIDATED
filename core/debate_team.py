@@ -3,7 +3,29 @@ import concurrent.futures as cf
 import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any
-from .transport import call_openai_compat
+from .transport import call_openai_compat, _empty_meta
+
+DEFAULT_PROXY_URL = "http://localhost:4000/v1"
+
+DEAD_ALIASES = {"ZZZ_BAD_LEGACY_MIXED_F_MODE", "ZZZ_BAD_LEGACY_MIXED_F_MODE_FAST",
+                "ZZZ_BAD_LEGACY_MIXED_F_MODE_LARGE", "ULTRA_PAID_MODE",
+                "ULTRA_PAID_MODE_FAST", "ULTRA_PAID_MODE_LARGE", "PAID-DEEPSEEK-PRO",
+                "PAID-DEEPSEEK-FLASH", "PAID-GROK"}
+
+
+def _resolve_aliases(base_url: str, n: int) -> List[str]:
+    """Resolve live aliases from GET /v1/models at runtime."""
+    try:
+        from core.combine_team import fetch_live_aliases
+        aliases = fetch_live_aliases(base_url)
+    except Exception:
+        aliases = []
+    if not aliases:
+        aliases = ["ULTRA_FREE_CLOUD_FAST", "ULTRA_FREE_CLOUD", "ULTRA_FREE_NVIDIA",
+                   "ULTRA_FREE_LOCAL_FAST", "ULTRA_FREE_TOOLS", "ULTRA_FREE_CLOUD_TOOLS"]
+    aliases = [a for a in aliases if a not in DEAD_ALIASES]
+    return aliases[:n] if len(aliases) >= n else (aliases * ((n // len(aliases)) + 1))[:n]
+
 
 def run_debate_team(
     query: str, 
@@ -21,11 +43,7 @@ def run_debate_team(
     Refactored from tools/freellm.py to be library-first.
     """
     if not aliases:
-        aliases = [
-            "free-mode-fast", "free-mode", "free-mode-large",
-            "paid-mode", "paid-mode-large", "nvidia-deepseek-v4-pro",
-            "openrouter-ring-1t", "claude-haiku-direct", "deepseek-chat-direct",
-        ][:n]
+        aliases = _resolve_aliases(base_url, n)
     
     if len(aliases) < n:
         aliases = (aliases * ((n // len(aliases)) + 1))[:n]
@@ -64,7 +82,7 @@ def run_debate_team(
         # Build cross-review context for rounds > 1
         if rnd > 1:
             prev_replies = "\n\n".join(
-                f"=== Debater {j+1} ({r['alias']}) ===\n{r['content']}"
+                f"=== Debater {j+1} ({r.get('alias','?')}) ===\n{r.get('content','[no content]')}"
                 for j, r in enumerate(round_results[rnd - 1])
             )
             for i in range(n):
@@ -89,10 +107,11 @@ def run_debate_team(
             msgs = history[i]
             try:
                 content, meta = call_openai_compat(
-                    provider="openrouter", 
-                    prompt="\n\n".join([m["content"] for m in msgs]), # Simplified for transport
+                    provider="openrouter",
+                    prompt="\n\n".join([m["content"] for m in msgs]),
                     model_override=alias,
-                    sampling={"temperature": 0.6, "max_tokens": 1500}
+                    sampling={"temperature": 0.6, "max_tokens": 1500},
+                    base_url=base_url.rstrip("/") + "/chat/completions",
                 )
                 return {"alias": alias, "content": content, "meta": meta, "status": 200}
             except Exception as e:

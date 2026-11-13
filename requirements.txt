@@ -1,4 +1,4 @@
+# SWARM_CONSOLIDATED — minimum runtime requirements
 rich>=13.0.0
 prompt_toolkit>=3.0.0
 urllib3>=2.0.0
-pathlib

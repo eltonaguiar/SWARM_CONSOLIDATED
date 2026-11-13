@@ -387,14 +387,24 @@ def _empty_meta() -> dict:
 
 
 def call_openai_compat(provider: str, prompt: str, model_override: str | None,
-                       sampling: dict | None = None) -> tuple[str, dict]:
+                       sampling: dict | None = None,
+                       base_url: str | None = None) -> tuple[str, dict]:
     """Returns (content, meta). Meta carries imp-B audit fields:
     model_fingerprint (data.model echoed by API), tokens_in / tokens_out
-    (from data.usage), transport_status (HTTP code as string)."""
+    (from data.usage), transport_status (HTTP code as string).
+
+    If `base_url` is provided (e.g. a LiteLLM proxy at http://localhost:4000/v1),
+    it replaces cfg["url"] and the per-provider key requirement is waived — the
+    proxy owns auth. A placeholder key is sent so OpenAI-compat gateways that
+    require an Authorization header are satisfied."""
     cfg = PROVIDERS[provider]
-    key = _resolve_key(cfg["key_envs"])
-    if not key and cfg["key_envs"]:
-        raise RuntimeError(f"{provider}: no key in env (checked {cfg['key_envs']})")
+    key = None
+    if base_url:
+        key = "anything"  # proxy-owned auth; placeholder satisfies header gateways
+    else:
+        key = _resolve_key(cfg["key_envs"])
+        if not key and cfg["key_envs"]:
+            raise RuntimeError(f"{provider}: no key in env (checked {cfg['key_envs']})")
     model = model_override or os.environ.get(f"{provider.upper()}_MODEL", cfg["model"])
     # Pollinations: model goes as a query param, not in the body.
     # Its body uses "model": "openai" (internal routing token).
@@ -412,7 +422,7 @@ def call_openai_compat(provider: str, prompt: str, model_override: str | None,
     if cfg.get("extra_body"):
         body.update(cfg["extra_body"])
     # Build URL: append ?model=<name> for providers that use query-param routing.
-    base_url = cfg["url"]
+    base_url = base_url or cfg["url"]
     if model_qp_name:
         # URL-encode the model name to handle any special characters safely.
         encoded_model = urllib.parse.quote(model, safe="")
@@ -465,7 +475,14 @@ def call_openai_compat(provider: str, prompt: str, model_override: str | None,
     meta["tokens_in"] = int(usage.get("prompt_tokens") or 0)
     meta["tokens_out"] = int(usage.get("completion_tokens") or 0)
     choices = data.get("choices") or [{}]
-    content = choices[0].get("message", {}).get("content", "") or ""
+    message = choices[0].get("message", {}) or {}
+    content = message.get("content", "") or ""
+    # reasoning_content is emitted by thinking models (e.g. LOCAL_CHAT/LOCAL_CODE
+    # via the LiteLLM proxy) when max_tokens is too low for a full completion.
+    # Surface it in meta so health gates can count thinking models as live.
+    reasoning = message.get("reasoning_content", "") or ""
+    if reasoning:
+        meta["reasoning_content"] = reasoning
     return content, meta
 
 

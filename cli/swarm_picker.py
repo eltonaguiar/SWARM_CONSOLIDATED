@@ -2,16 +2,17 @@
 """
 Swarm Picker — Guided interface for selecting the right AI orchestration tool.
 Routes the user to the appropriate consolidated core module based on their goal.
-"""
 
+CLI surface (argparse) so --help works on non-TTY / CI without hitting input().
+"""
 from __future__ import annotations
+import argparse
 import os
 import sys
 import json
 import urllib.request
-import urllib.parse
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import List
 
 # Add consolidated core to path if not installed
 REPO_ROOT = Path(__file__).parent.parent
@@ -22,26 +23,27 @@ try:
     from rich.table import Table
     from rich.panel import Panel
     from rich import box
-    from prompt_toolkit import prompt
-    from prompt_toolkit.completion import WordCompleter
     _HAS_RICH = True
 except ImportError:
     _HAS_RICH = False
 
 con = Console() if _HAS_RICH else None
 
+PROXY_URL = os.environ.get("SWARM_PROXY_URL", "http://localhost:4000/v1")
+
+
 def get_proxy_models(base_url: str) -> List[str]:
-    """Fetch current live aliases from the LiteLLM proxy."""
+    """Fetch current live aliases from the LiteLLM proxy (timeout-bounded, never hangs)."""
     url = base_url.rstrip("/") + "/models"
     try:
-        with urllib.request.urlopen(url, timeout=5) as r:
+        req = urllib.request.Request(url, headers={"User-Agent": "swarm-picker/1.0"})
+        with urllib.request.urlopen(req, timeout=8) as r:
             data = json.loads(r.read().decode("utf-8"))
-            # LiteLLM /models usually returns a list of model objects with an 'id'
-            models = data.get("data", [])
-            return [m.get("id") for m in models if isinstance(m, dict)]
-    except Exception as e:
-        # Fallback to a minimal known set if proxy is down
-        return ["free-mode-fast", "paid-mode", "ultra-free-cloud-fast"]
+        models = data.get("data", [])
+        return [m.get("id") for m in models if isinstance(m, dict) and m.get("id")]
+    except Exception:
+        return []
+
 
 def print_picker_menu():
     if not _HAS_RICH:
@@ -70,26 +72,34 @@ def print_picker_menu():
 
     con.print(Panel(table, border_style="blue"))
 
-def main():
-    proxy_url = os.environ.get("SWARM_PROXY_URL", "http://localhost:4000/v1")
-    
-    # Runtime model resolution (Requirement from Freebuff)
-    live_models = get_proxy_models(proxy_url)
-    
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Swarm Picker — choose an orchestration tool.")
+    ap.add_argument("--non-tty", action="store_true",
+                    help="Non-interactive mode: print menu and exit 0 (for CI).")
+    ap.add_argument("--proxy-url", default=PROXY_URL,
+                    help="LiteLLM proxy base URL (default: http://localhost:4000/v1).")
+    args = ap.parse_args()
+
+    live_models = get_proxy_models(args.proxy_url)
+
+    print_picker_menu()
+    print(f"\nProxy: {args.proxy_url}  ({len(live_models)} live aliases resolved)")
+
+    if args.non_tty or not sys.stdin.isatty():
+        print("\n[non-TTY] menu printed, exiting 0.")
+        return 0
+
     while True:
-        print("\n")
-        print_picker_menu()
-        
-        choice = input("\nPick an option (1-6) or 'q' to quit: ").strip().lower()
-        
+        try:
+            choice = input("\nPick an option (1-6) or 'q' to quit: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n")
+            return 0
+
         if choice == 'q':
-            break
-        
-        # Map choice to a launch command or a logic flow
-        # Since this is a picker, it can either:
-        # 1. Execute the swarm directly using the consolidated core
-        # 2. Print the command the user should run in the terminal
-        
+            return 0
+
         mapping = {
             "1": ("swarm", "CombineTeam"),
             "2": ("swarmv2", "CodingSwarm"),
@@ -98,17 +108,18 @@ def main():
             "5": ("ruflo", "RufloOrchestrator"),
             "6": ("swarm-free", "CombineTeam (Free)"),
         }
-        
+
         if choice in mapping:
             tool, logic = mapping[choice]
             print(f"\n🚀 Launching {tool} using {logic} logic...")
-            print(f"Using Proxy: {proxy_url}")
+            print(f"Using Proxy: {args.proxy_url}")
             print(f"Resolved {len(live_models)} live aliases from proxy.")
-            # In a real implementation, this would now import from core/ and run the logic
-            # For now, we provide the "guided" output.
             print(f"\n[GUIDANCE] To run this now: python3 tools/{tool}.py --query 'your query'")
         else:
             print("Invalid selection. Please choose 1-6 or 'q'.")
 
+    return 0
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

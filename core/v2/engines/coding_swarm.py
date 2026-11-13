@@ -121,6 +121,32 @@ class CodingSwarmOrchestrator(BaseOrchestrator):
 
     # -- Pipeline stages --------------------------------------------------
 
+    async def _apply_revision(
+        self,
+        code: dict,
+        comments: list[dict],
+        revision: int,
+    ) -> str:
+        """Use a generator to rewrite code based on review comments."""
+        config = AgentConfig(
+            role=AgentRole.CODE_GENERATOR,
+            model=self.llm.model if self.llm else "gpt-4o",
+            system_prompt=f"You are a {AgentRole.CODE_GENERATOR.value} agent. Fix the code based on the provided reviews.",
+        )
+        worker = CodeGeneratorWorker("reviser", config, self.bus, llm=self.llm)
+
+        review_text = "\n".join([c.get("comment", "") for c in comments])
+        task = SwarmTask(
+            task_type="coding",
+            description=f"Revision {revision + 1}: Fix the following issues:\n{review_text}",
+            inputs={
+                "current_code": code.get("source_code", ""),
+                "filepath": code.get("filepath", "generated.py"),
+            },
+        )
+        artifact = await worker.generate(task)
+        return artifact.source_code
+
     def _decompose_task(self, description: str) -> list[dict]:
         """Decompose a coding task into sub-tasks (stub for subclassing)."""
         # In production this would use an LLM; here we return a single task.
@@ -227,7 +253,10 @@ class CodingSwarmOrchestrator(BaseOrchestrator):
                 if not issues:
                     break
                 if revision < max_revisions - 1:
-                    code["source_code"] += f"\n# Fixed revision {revision + 1}"
+                    # Actual revision: use a generator to fix the code based on review
+                    code["source_code"] = await self._apply_revision(
+                        code, review_comments, revision
+                    )
             artifacts.append(
                 CodeArtifact(
                     filepath=code["filepath"],
