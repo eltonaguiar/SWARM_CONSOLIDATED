@@ -44,3 +44,13 @@ The "closeout-loop" versions take that one step further: instead of stopping whe
 ## Overall Conclusion
 
 This project researched how modern agent frameworks structure complex work, then shipped it as two interchangeable ways of working — a chosen **mode** and an auto-triggered **skill** — each covering both a standard decompose-and-delegate pattern and a more persistent closeout-loop variant that keeps re-planning until every checklist item is closed. The packaged artifacts are reusable and documented, with a closing caveat: hands-on testing in real projects remains, since a written tool can only prove itself once it is installed, exercised, and refined against actual multi-step tasks.
+
+---
+
+## Summary — TL;DR & ELI5
+
+*Added 2026-11-14 03:27 EST*
+
+**TL;DR:** This folder ships four reusable Kilo Code tools that all follow one workflow — break big work into a tracked checklist, send independent items to parallel subagents, then stitch results together. `decomposer` (mode) and `decompose-and-delegate` (skill) do the standard version; `closeout-loop` (mode) and `todo-closeout-loop` (skill) keep re-planning until every item is closed. Modes are picked by you; skills are auto-triggered on a description match (or by name / slash command).
+
+**ELI5:** Imagine cleaning a whole house. These tools write a checklist of separate chores and hand each to its own helper working at the same time, then the main person gathers everything and finishes up. The closeout-loop versions promise not to stop until every box on the checklist is genuinely ticked.
