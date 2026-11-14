@@ -28,6 +28,9 @@ Consolidated research, harness, and reference for LLM agent swarms. Documents ho
 - [Recommendations (ordered by payoff)](#recommendations-ordered-by-payoff)
 - [Related Documents](#related-documents)
 - [TL;DR](#tldr)
+- [ELI5 — Explain Like I'm 5](#eli5--explain-like-im-5)
+- [Follow-up Fixes Applied (2026-11-14)](#follow-up-fixes-applied-2026-11-14)
+- [Overall Conclusion](#overall-conclusion)
 - [Appendix — AI_MENU → Swarm Mapping](#appendix--ai_menu--swarm-mapping)
 - [Maintenance](#maintenance)
 - [License](#license)
@@ -592,6 +595,42 @@ tools/ai_menu.sh swarm
 | **Which keys actually work in a swarm?** | Cerebras, DeepInfra, AIML API, xAI (Grok) pass tool-calls + 34k-context + chat auth. Groq 413s on 15k-token prompts (TPM 8,000). NVIDIA/SambaNova/Gemini/Together/Fireworks are dead at chat level despite `/models` returning 200. |
 | **Best research setup?** | Planner → CombineTeam (diverse providers) → Critic → Publisher, with harness-fetched retrieval (Startpage/Ecosia + frame extraction). `max_tokens >= 3000` for reasoning aliases. Expect ~3/4 on expert benchmarks even with retrieval. |
 | **Live benchmark verdict?** | tools/swarm ✅ vs Ruflo ❌ 100% failure on identical tasks — **but config-dependent**: tools/swarm used a paid DeepSeek key while Ruflo ran free-tier-only against a down OpenRouter tier. Wire paid keys into Hermes + add `--direct` mode, then re-benchmark. Full section below. |
+
+---
+
+## ELI5 — Explain Like I'm 5
+
+Imagine you need a big job done — say, checking a pile of pull requests. You can ask one helper, or you can ask a whole team at once.
+
+- **tools/swarm** is a reliable team that you pay a little to use. In our test it finished the job in about 11 seconds for a fraction of a cent.
+- **Ruflo** is a free team that only works if the free phone line is open. In our test the line was busy, so all five helpers said "no answer" — that's not because the team is bad, it's because nobody gave them a working phone.
+- **swarm_v2** is the newest, best-equipped team: more than one helper works at the same time, they remember past jobs, and there's a safety checklist. It's the best choice for serious work — once its "traffic cop" (the LiteLLM proxy) stops making everyone wait in a single line.
+
+One more thing: telling a model something is "free" doesn't mean it can do the job. Half the free "keys" answer a simple "hello?" but fall over when you hand them real work.
+
+## Follow-up Fixes Applied (2026-11-14)
+
+The 2026-11-13 peer review flagged five P0 issues. Re-verification found three already fixed; the remaining two plus a related routing gap were fixed in **PR #2 (squash-merged as `570e9d84`)**:
+
+| Item | File | Change |
+|------|------|--------|
+| **P0** | `swarm_model_eval.py` | `call_model()` accepts `base_url`; the fallback path uses `resolve_best_model()['base_url']` instead of always hitting `localhost:4000`. Restores the previously dead Ollama/vLLM fallback. |
+| **P1** | `swarm_parallel_runner.py` | Replaced the accidental acceptance-driver duplicate with a real generic multi-endpoint parallel runner (ThreadPoolExecutor over vLLM `:8000` / Ollama `:11434`, TCP health probe, per-endpoint isolation). |
+| **P1** | `swarm_e2e_fix.py` | `call_with_fallback()` prefers parallel fan-out when local endpoints are reachable; sequential `probe_providers()` fallback preserved. `SWARM_PARALLEL=0/false/no/off` disables. |
+| **P2** | `swarm_unified.py` | Added `--direct`; threads provider `base_url`/`api_key` through `run_with_fallback` into CombineTeam/DebateTeam; strips `/chat/completions` to avoid double-suffixing; prints a notice when a direct route is unavailable. Default (proxy) behavior unchanged. |
+
+**Verification:** `py_compile` clean on all four files; `--direct` present in `--help`; parallel runner `--help` no longer fires inference; empty-endpoint path returns cleanly; two independent read-only reviews found (and this PR fixed) a direct-route URL-doubling bug.
+
+**Still open (not code, environment):** Ruflo's OpenRouter 404 is config/endpoint dependent — wire paid keys into Hermes (`~/.hermes/config.toml`) or use `--direct` against a reachable endpoint, then re-benchmark. `.ruflo/orchestrator.py` lives in the parent repo, so it cannot be patched here.
+
+## Overall Conclusion
+
+- **Ruflo vs Hermes:** they are the same system — Ruflo *is* the Hermes-driven swarm. The meaningful comparison is Ruflo (free-tier, role-specialized audit) vs tools/swarm (paid, multi-model consensus).
+- **Best for production engineering:** `swarm_v2` (true parallelism, persistent memory, safety guards, hard cost ceilings, 300+ tests).
+- **Best for zero-setup audit/strategy:** Ruflo on the free tier — once its endpoint configuration is fixed and re-benchmarked.
+- **Biggest system-level blocker:** LiteLLM `--num_workers 1` serializes all fan-out. The fix is per-agent endpoints (this repo's new parallel runner) or raising worker count; `--direct` gives the CLI a path around the proxy.
+- **Biggest data-level blocker:** free keys that pass `/models` but fail real chat calls. Admit keys only after a tool-call + 34k-context + chat-auth probe.
+- **Bottom line:** the architecture is sound; reliability comes from healthy endpoints and honest probing, not from the model brand. The remaining work is environment/config (wire keys, re-benchmark), not code.
 
 ---
 
