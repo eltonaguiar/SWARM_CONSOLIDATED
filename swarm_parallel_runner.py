@@ -1,210 +1,190 @@
 #!/usr/bin/env python3
 """
-Swarm Acceptance Driver — BROKENMERMAIDTEST (Phase 2)
+Parallel Swarm Runner — Multi-Endpoint Architecture
 
-The swarm diagnoses + fixes the broken Mermaid pages itself.
+Each agent hits its own independent inference endpoint, so N agents run
+truly in parallel with no shared proxy queue (the :4000 LiteLLM proxy with
+``--num_workers 1`` serializes every request — see
+SWARM_CONCURRENCY_RESEARCH_2026-11-13.md).
 
-Method:
-  1. Fetch each case page from GitHub Pages (raw HTML).
-  2. Extract the mermaid block; validate its syntax LOCALLY with mermaid@10.9.1
-     (/tmp/mm_bench/validate.mjs). If ok:false -> broken. (Client-side JS render
-     can't be seen in raw HTML, so local syntax validation is the ground truth.)
-  3. For each broken page, ask the swarm (CombineTeam via consolidated core/
-     transport, proxy-first, aliases from GET /v1/models) to diagnose the root
-     cause and emit a COMPLETE fixed mermaid block (nodes + edges, valid at 10.9.1).
-  4. Re-validate the fix locally (validate.mjs -> ok:true). Only then apply it.
-  5. Push all fixed files via GitHub Contents API -> re-triggers Pages deploy.
+Default endpoints (all local, accept a placeholder key):
+  - Agent 1 → vLLM   :8000   → qwen3-8b
+  - Agent 2 → Ollama :11434  → qwen2.5-coder:7b
+  - Agent 3 → Ollama :11434  → qwen3:30b-a3b
 
-No dbpasses.txt reads anywhere — proxy-first, alias + placeholder key only.
+Usage:
+    python3 swarm_parallel_runner.py "your query"
+    echo "your query" | python3 swarm_parallel_runner.py
+
+Programmatic:
+    from swarm_parallel_runner import (
+        run_parallel_swarm, available_endpoints, first_content,
+    )
+    res = run_parallel_swarm("query", endpoints=available_endpoints())
+    content, source = first_content(res)
 """
 from __future__ import annotations
-import base64
+
+import concurrent.futures as cf
 import json
-import re
-import subprocess
+import socket
 import sys
-import urllib.request
-import urllib.error
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
-REPO = "eltonaguiar/BROKENMERMAIDTEST"
-BASE = f"https://eltonaguiar.github.io/{REPO.split('/')[-1]}"
-PAGES = [
-    "index.html",
-    "case-a-unquoted-parens.html",
-    "case-b-unbalanced-brackets.html",
-    "case-c-unclosed-subgraph.html",
-    "case-d-type-not-line1.html",
-    "case-e-pipe-in-label.html",
-    "case-f-raw-jekyll.html",
+# Repo root is this file's directory; import core.transport directly.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from core.transport import call_openai_compat  # noqa: E402
+
+# Three independent endpoints — no shared proxy bottleneck.
+DEFAULT_ENDPOINTS: list[dict[str, str]] = [
+    {
+        "name": "vllm-qwen3-8b",
+        "url": "http://localhost:8000/v1",
+        "model": "qwen3-8b",
+        "api_key": "anything",
+    },
+    {
+        "name": "ollama-qwen2.5-coder-7b",
+        "url": "http://localhost:11434/v1",
+        "model": "qwen2.5-coder:7b",
+        "api_key": "anything",
+    },
+    {
+        "name": "ollama-qwen3-30b-a3b",
+        "url": "http://localhost:11434/v1",
+        "model": "qwen3:30b-a3b",
+        "api_key": "anything",
+    },
 ]
-LOCAL = Path("/tmp/bmtest")
-TOKEN = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True).stdout.strip()
-
-sys.path.insert(0, str(Path.home() / "SWARM_CONSOLIDATED"))
-from core.combine_team import run_combine_team  # noqa: E402
-
-VALIDATOR = Path("/tmp/mm_bench/validate.mjs")
 
 
-def api(method: str, path: str, data=None):
-    req = urllib.request.Request(
-        f"https://api.github.com/repos/{REPO}/{path}", method=method,
-        data=json.dumps(data).encode() if data is not None else None,
-        headers={"Authorization": f"token {TOKEN}",
-                 "Accept": "application/vnd.github+json",
-                 "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as x:
-        return json.loads(x.read())
+def _chat_url(base: str) -> str:
+    """Accept a base URL with or without /chat/completions and normalise."""
+    base = base.rstrip("/")
+    return base if base.endswith("/chat/completions") else base + "/chat/completions"
 
 
-def current_sha(path: str) -> str:
-    return api("GET", f"contents/{path}?ref=main")["sha"]
-
-
-def push_file(path: str, content: str, message: str):
-    body = {"message": message, "content": base64.b64encode(content.encode()).decode(), "branch": "main"}
+def endpoint_up(url: str, timeout: float = 0.5) -> bool:
+    """Cheap TCP reachability probe so we never block on a dead endpoint."""
     try:
-        body["sha"] = current_sha(path)
-    except urllib.error.HTTPError as e:
-        if e.code != 404:
-            raise
-    api("PUT", f"contents/{path}", body)
-    print(f"  pushed {path}")
+        parsed = urlparse(url)
+        host = parsed.hostname
+        if not host:
+            return False
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
-def fetch_page(page: str) -> str:
-    url_path = "" if page == "index.html" else page
-    url = f"{BASE}/{url_path}" if url_path else BASE + "/"
-    req = urllib.request.Request(url, headers={"User-Agent": "swarm-driver/1.0"})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return r.read().decode("utf-8", errors="replace")
+def available_endpoints(
+    endpoints: list[dict[str, str]] | None = None,
+    timeout: float = 0.5,
+) -> list[dict[str, str]]:
+    """Return only endpoints whose host:port accepts a TCP connection."""
+    endpoints = endpoints if endpoints is not None else DEFAULT_ENDPOINTS
+    return [e for e in endpoints if endpoint_up(e["url"], timeout=timeout)]
 
 
-def extract_mmd_blocks(html: str) -> list[str]:
-    return re.findall(r'<div class="mermaid">\s*(.*?)\s*</div>', html, re.S)
-
-
-def validate_mmd(block: str) -> dict:
-    import tempfile, os as _os
-    with tempfile.NamedTemporaryFile("w", suffix=".mmd", delete=False) as f:
-        f.write(block); tmp = f.name
+def call_model(agent: dict[str, str], prompt: str, max_tokens: int = 2000) -> dict[str, Any]:
+    """Call one endpoint. Never raises — returns an ok=False record on failure."""
+    name = agent["name"]
     try:
-        proc = subprocess.run(["node", str(VALIDATOR), tmp], text=True,
-                              capture_output=True, timeout=30)
-        out = (proc.stdout or "").strip()
-        try:
-            return json.loads(out)
-        except json.JSONDecodeError:
-            return {"ok": False, "err": out[:200] or (proc.stderr or "")[:200]}
-    finally:
-        _os.unlink(tmp)
+        content, meta = call_openai_compat(
+            provider="openrouter",
+            prompt=prompt,
+            model_override=agent["model"],
+            sampling={"temperature": 0.2, "max_tokens": max_tokens},
+            base_url=_chat_url(agent["url"]),
+        )
+        reasoning = (meta or {}).get("reasoning_content", "") or ""
+        text = content if (content and content.strip()) else reasoning
+        return {
+            "name": name,
+            "model": agent["model"],
+            "content": text or "",
+            "meta": meta or {},
+            "ok": bool((text or "").strip()),
+        }
+    except Exception as e:  # noqa: BLE001 — endpoint isolation
+        return {
+            "name": name,
+            "model": agent.get("model", "?"),
+            "content": "",
+            "meta": {},
+            "ok": False,
+            "error": f"{type(e).__name__}: {e}",
+        }
 
 
-FIX_PROMPT_TEMPLATE = """You are a mermaid@10.9.1 expert. A GitHub Pages file renders a broken
-mermaid diagram (mermaid 10.9.1 reports 'Syntax error in text' or no SVG).
+def run_parallel_swarm(
+    query: str,
+    endpoints: list[dict[str, str]] | None = None,
+    max_tokens: int = 2000,
+    max_workers: int | None = None,
+) -> dict[str, Any]:
+    """Fan a query out to every endpoint concurrently and collect results.
 
-Broken mermaid block:
-------------------
-{block}
-------------------
+    Returns ``{query, agents, results, any_ok}`` where each result is a dict
+    from :func:`call_model`. Ordering is deterministic (sorted by name).
+    """
+    eps = endpoints if endpoints is not None else DEFAULT_ENDPOINTS
+    if not eps:
+        return {"query": query, "agents": [], "results": [], "any_ok": False}
 
-Task:
-1. State the root cause in one short sentence.
-2. Then output a SINGLE fenced code block (```mermaid ... ```) containing the
-   COMPLETE corrected mermaid diagram. Requirements:
-   - At least 2 nodes and 1 edge (an empty `flowchart TD` is NOT acceptable).
-   - Diagram type keyword (flowchart/graph) on line 1, no leading blank line/comment.
-   - ASCII text only; balanced brackets/parens; labels with parens `()` or pipe `|`
-     must be QUOTED: `E["label with (parens) or | pipe"]`.
-   - Must parse cleanly under mermaid@10.9.1 and render a visible diagram.
-Output ONLY the fence + diagram. No prose after the fence."""
-
-
-def extract_fence(answer: str) -> str | None:
-    m = re.findall(r"```(?:mermaid)?\s*\n(.*?)\n```", answer, re.S)
-    if m:
-        return m[0].strip()
-    for line in answer.strip().splitlines():
-        first = line.strip().split()[0] if line.strip() else ""
-        if first in ("flowchart", "graph", "sequenceDiagram", "classDiagram", "stateDiagram"):
-            return answer.strip()
-        break
-    return None
+    workers = max_workers or len(eps)
+    results: list[dict[str, Any]] = []
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = {ex.submit(call_model, a, query, max_tokens): a for a in eps}
+        for fut in cf.as_completed(futures):
+            results.append(fut.result())
+    results.sort(key=lambda r: r["name"])
+    return {
+        "query": query,
+        "agents": [e["name"] for e in eps],
+        "results": results,
+        "any_ok": any(r.get("ok") for r in results),
+    }
 
 
-def swarm_fix(page: str, block: str) -> str | None:
-    query = FIX_PROMPT_TEMPLATE.format(block=block)
-    print(f"  {page}: asking swarm to diagnose + fix...", flush=True)
-    result = run_combine_team(query, n=3, max_tokens=500)
-    if not result["results"]:
-        print(f"  {page}: swarm returned no usable answer", flush=True)
-        return None
-    best = result["results"][0]["content"]
-    fixed = extract_fence(best)
-    if not fixed:
-        print(f"  {page}: swarm answer had no mermaid block:\n{best[:300]}", flush=True)
-        return None
-    print(f"  {page}: swarm fix candidate ({len(fixed)}b): {fixed.splitlines()[0]}", flush=True)
-    return fixed
+def first_content(result: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Return (content, source_name) of the first non-empty successful agent."""
+    for r in result.get("results", []):
+        if r.get("ok") and r.get("content"):
+            return r["content"], r["name"]
+    return None, None
 
 
-def apply_fix(page: str, fixed_block: str) -> str:
-    html = (LOCAL / page).read_text(encoding="utf-8")
-    new_html, n = re.subn(
-        r'(<div class="mermaid">\s*)(.*?)(\s*</div>)',
-        lambda m: m.group(1) + fixed_block + m.group(3),
-        html, count=1, flags=re.S,
-    )
-    if n != 1:
-        raise RuntimeError(f"could not replace mermaid block in {page}")
-    (LOCAL / page).write_text(new_html, encoding="utf-8")
-    return new_html
-
-
-def main():
-    fixed_pages = []
-    for page in PAGES:
-        print(f"\n== {page} ==", flush=True)
-        html = fetch_page(page)
-        blocks = extract_mmd_blocks(html)
-        if not blocks:
-            print(f"  no mermaid block, skipping", flush=True)
-            continue
-        block = blocks[0].strip()
-        vr = validate_mmd(block)
-        broken = not vr.get("ok", False)
-        print(f"  local validate: ok={vr.get('ok')} err={vr.get('err','')[:90]}", flush=True)
-        if not broken:
-            print(f"  {page}: already valid, skipping", flush=True)
-            continue
-        fixed_block = swarm_fix(page, block)
-        if not fixed_block:
-            print(f"  {page}: FIX FAILED", flush=True)
-            continue
-        fvr = validate_mmd(fixed_block)
-        if not fvr.get("ok", False):
-            print(f"  {page}: swarm fix INVALID at 10.9.1 ({fvr.get('err','')[:90]}), skipping", flush=True)
-            continue
-        apply_fix(page, fixed_block)
-        fixed_pages.append(page)
-        print(f"  {page}: FIX APPLIED (valid at 10.9.1)", flush=True)
-
-    if not fixed_pages:
-        print("\nNo fixes applied.", flush=True)
-        return
-
-    msg = """Swarm auto-fix: diagnose + repair broken mermaid diagrams
-
-The swarm fetched each broken case page, validated mermaid syntax locally at
-mermaid@10.9.1, diagnosed the root cause (unquoted parens / unbalanced brackets /
-unclosed subgraph / type not on line 1 / pipe in label / Jekyll shim skip),
-emitted a complete corrected diagram, re-validated it locally, and applied the
-fixes. Re-deploys GitHub Pages for end-to-end validation."""
-    for page in fixed_pages:
-        push_file(page, (LOCAL / page).read_text(encoding="utf-8"), msg)
-    print(f"\nFixed {len(fixed_pages)} page(s) — Pages redeploy triggered.")
+def _main() -> int:
+    usage = 'usage: python3 swarm_parallel_runner.py "<query>"'
+    if any(a in ("-h", "--help") for a in sys.argv[1:]):
+        print(usage)
+        return 0
+    query = " ".join(sys.argv[1:]).strip()
+    if not query and not sys.stdin.isatty():
+        query = sys.stdin.read().strip()
+    if not query:
+        print(usage, file=sys.stderr)
+        return 2
+    eps = available_endpoints()
+    if not eps:
+        print("No reachable endpoints (vLLM :8000 / Ollama :11434).", file=sys.stderr)
+        return 1
+    result = run_parallel_swarm(query, endpoints=eps)
+    printable = {
+        "query": result["query"],
+        "agents": result["agents"],
+        "any_ok": result["any_ok"],
+        "results": [
+            {k: v for k, v in r.items() if k != "meta"} for r in result["results"]
+        ],
+    }
+    print(json.dumps(printable, indent=2))
+    return 0 if result["any_ok"] else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(_main())

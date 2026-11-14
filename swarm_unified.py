@@ -37,12 +37,66 @@ from pathlib import Path
 from typing import Any
 
 sys.path.insert(0, str(Path.home() / "SWARM_CONSOLIDATED"))
-from core.combine_team import run_combine_team, fetch_live_aliases, COST_CAP_USD  # noqa: E402
-from core.debate_team import run_debate_team  # noqa: E402
+from core.combine_team import (
+    run_combine_team as _run_combine_team,
+    fetch_live_aliases,
+    COST_CAP_USD,
+)  # noqa: E402
+from core.debate_team import run_debate_team as _run_debate_team  # noqa: E402
 from core.transport import call_openai_compat  # noqa: E402
 from probe_providers import resolve_best_model  # noqa: E402
 
 PROXY_URL = "http://localhost:4000/v1"
+
+# Per-run routing override. When ``--direct`` is set, run_with_fallback fills
+# this with a provider's own base_url/api_key so runners hit that endpoint
+# directly instead of the shared :4000 proxy. Default (None) keeps the proxy.
+_ROUTE: dict[str, str | None] = {"base_url": None, "api_key": None}
+
+
+def _strip_chat_suffix(url: str) -> str:
+    """probe_providers returns full ``.../chat/completions`` URLs, but
+    core.combine_team/debate_team append ``/chat/completions`` themselves.
+    Strip the suffix so direct routing does not double it."""
+    suffix = "/chat/completions"
+    return url[: -len(suffix)] if url.endswith(suffix) else url
+
+
+def _routed_kwargs() -> dict[str, str]:
+    kw: dict[str, str] = {}
+    if _ROUTE.get("base_url"):
+        kw["base_url"] = _strip_chat_suffix(_ROUTE["base_url"])
+    if _ROUTE.get("api_key"):
+        kw["api_key"] = _ROUTE["api_key"]  # type: ignore[assignment]
+    return kw
+
+
+def run_combine_team(query: str, n: int = 5, aliases=None, max_tokens: int = 300, **kw):
+    """Wrap core CombineTeam so every call honours the active --direct route."""
+    merged = {**_routed_kwargs(), **kw}
+    return _run_combine_team(query, n=n, aliases=aliases, max_tokens=max_tokens, **merged)
+
+
+def run_debate_team(query: str, **kw):
+    """Wrap core DebateTeam so every call honours the active --direct route."""
+    merged = {**_routed_kwargs(), **kw}
+    return _run_debate_team(query, **merged)
+
+
+def _provider_key(provider: dict[str, Any]) -> str:
+    """Best-effort env key lookup for direct mode.
+
+    ``probe_providers`` stores ``key_env`` as a human description (e.g.
+    ``"OPENROUTER_API_KEY (from dbpasses.txt)"``), so extract ENV-like tokens
+    and try each in the environment. Falls back to a placeholder, which is
+    what keyless local endpoints (vLLM/Ollama) and the proxy expect.
+    """
+    key_env = str(provider.get("key_env") or "")
+    for name in re.findall(r"[A-Z][A-Z0-9_]{2,}", key_env):
+        val = os.environ.get(name)
+        if val:
+            return val
+    return "anything"
 
 # --------------------------------------------------------------------------- #
 # Architecture registry
@@ -338,7 +392,8 @@ ARCH_RUNNERS = {
 
 
 def run_with_fallback(arch: str, query: str, model_alias: str,
-                      tier: str = "free", max_cost_usd: float = COST_CAP_USD) -> dict:
+                      tier: str = "free", max_cost_usd: float = COST_CAP_USD,
+                      direct: bool = False) -> dict:
     """Run a swarm architecture with model fallback chain.
 
     Uses probe_providers.resolve_best_model() to find the best available
@@ -346,44 +401,66 @@ def run_with_fallback(arch: str, query: str, model_alias: str,
     fails or the proxy is down. Tries direct endpoints (vLLM :8000,
     Ollama :11434) first for concurrent execution, then LiteLLM proxy
     (:4000), then pollinations/openrouter/ollama CLI as last resorts.
+
+    When ``direct`` is True, each candidate model is routed to its own
+    provider ``base_url`` (and env key) instead of the shared :4000 proxy —
+    this is the in-repo half of the ``--direct`` path that bypasses the
+    proxy/single-worker bottleneck.
     """
     last_err = "unknown"
 
     # Build the model list: preferred alias first, then probe results
     models_to_try = [model_alias]
+    prov_map: dict[str, dict[str, Any]] = {}
 
     # Add all available providers from probe_providers, in priority order
     try:
         from probe_providers import probe_providers
         all_providers = probe_providers()
         for p in all_providers:
-            alias = p["alias"]
-            if alias not in models_to_try:
-                models_to_try.append(alias)
+            prov_map[p["alias"]] = p
+            if p["alias"] not in models_to_try:
+                models_to_try.append(p["alias"])
     except Exception:
         pass
 
-    for model in models_to_try:
-        try:
-            print(f"  Trying model: {model} (architecture: {arch})")
-            runner = ARCH_RUNNERS[arch]
-            result = runner(query, model)
-            result["model_used"] = model
-            result["tier"] = tier
-            result["cost_usd"] = result.get("cost_usd", 0.0)
-            if result["cost_usd"] > max_cost_usd:
-                print(f"  Cost cap exceeded (${result['cost_usd']:.4f} > ${max_cost_usd}), trying next model")
+    try:
+        for model in models_to_try:
+            try:
+                p = prov_map.get(model)
+                if direct and p and p.get("base_url"):
+                    _ROUTE["base_url"] = p["base_url"]
+                    _ROUTE["api_key"] = _provider_key(p)
+                else:
+                    if direct:
+                        print(f"  Direct route unavailable for {model}: not in provider map; using proxy")
+                    _ROUTE["base_url"] = None
+                    _ROUTE["api_key"] = None
+                route = "direct" if _ROUTE["base_url"] else "proxy"
+                print(f"  Trying model: {model} (architecture: {arch}, route: {route})")
+                runner = ARCH_RUNNERS[arch]
+                result = runner(query, model)
+                result["model_used"] = model
+                result["tier"] = tier
+                result["route"] = route
+                result["cost_usd"] = result.get("cost_usd", 0.0)
+                if result["cost_usd"] > max_cost_usd:
+                    print(f"  Cost cap exceeded (${result['cost_usd']:.4f} > ${max_cost_usd}), trying next model")
+                    continue
+                return result
+            except Exception as e:
+                last_err = str(e)
+                print(f"  Model {model} failed: {e}")
                 continue
-            return result
-        except Exception as e:
-            last_err = str(e)
-            print(f"  Model {model} failed: {e}")
-            continue
+    finally:
+        _ROUTE["base_url"] = None
+        _ROUTE["api_key"] = None
 
     return {
         "architecture": arch,
         "model_used": None,
         "tier": tier,
+        "route": "direct" if direct else "proxy",
         "output": f"All models failed. Last error: {last_err}",
         "cost_usd": 0.0,
         "error": last_err,
@@ -404,15 +481,22 @@ def main() -> int:
                     default="free", help="Model tier for fallback chain")
     ap.add_argument("--max-cost", type=float, default=COST_CAP_USD,
                     help="Hard cost ceiling USD")
+    ap.add_argument("--direct", action="store_true",
+                    help="Route each model to its own provider base_url instead "
+                         "of the shared :4000 proxy (bypasses the single-worker "
+                         "serialization bottleneck). Best for keyless local "
+                         "endpoints (vLLM/Ollama); cloud providers still need "
+                         "keys wired where the endpoint is served.")
     args = ap.parse_args()
 
     print(f"[swarm_unified] task: {args.query[:80]}...")
     print(f"[swarm_unified] architecture: {args.architecture}")
     print(f"[swarm_unified] model: {args.model} ({args.tier})")
     print(f"[swarm_unified] cost cap: ${args.max_cost}")
+    print(f"[swarm_unified] route: {'direct' if args.direct else 'proxy'}")
 
     result = run_with_fallback(args.architecture, args.query, args.model,
-                               args.tier, args.max_cost)
+                               args.tier, args.max_cost, direct=args.direct)
 
     print("\n" + "=" * 60)
     print(f"SWARM RESULT — arch={result['architecture']} "
