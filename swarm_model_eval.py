@@ -169,14 +169,22 @@ def extract_mmd_from_text(text: str) -> str | None:
     return None
 
 
-def call_model(model_alias: str, prompt: str, max_tokens: int = 1200) -> tuple[str, dict, str]:
-    """Call a single model via proxy. Returns (content_or_reasoning, meta, source_type)."""
+DEFAULT_PROXY_URL = "http://localhost:4000/v1/chat/completions"
+
+
+def call_model(model_alias: str, prompt: str, max_tokens: int = 1200,
+               base_url: str | None = None) -> tuple[str, dict, str]:
+    """Call a single model. Returns (content_or_reasoning, meta, source_type).
+
+    ``base_url`` lets callers route to the resolved provider endpoint (e.g. a
+    local vLLM/Ollama fallback) instead of always hitting the :4000 proxy.
+    """
     content, meta = call_openai_compat(
         provider="openrouter",
         prompt=prompt,
         model_override=model_alias,
         sampling={"temperature": 0.2, "max_tokens": max_tokens},
-        base_url="http://localhost:4000/v1/chat/completions",
+        base_url=base_url or DEFAULT_PROXY_URL,
     )
     # Prefer content, fall back to reasoning_content (thinking models)
     if content and content.strip():
@@ -276,12 +284,15 @@ def evaluate_model(model_alias: str, tier: str) -> dict:
         try:
             content, meta, source = call_model(alias_to_try, query, max_tokens=1200)
         except Exception as e:
-            # Try fallback model
+            # Try fallback model (use its resolved endpoint, not the proxy)
             best = resolve_best_model(tier=tier)
             if best and best["alias"] != model_alias:
                 print(f"    Preferred alias {model_alias} failed ({e}), trying {best['alias']}")
                 try:
-                    content, meta, source = call_model(best["alias"], query, max_tokens=1200)
+                    content, meta, source = call_model(
+                        best["alias"], query, max_tokens=1200,
+                        base_url=best.get("base_url"),
+                    )
                     result["model_used"] = best["alias"]
                 except Exception as e2:
                     result["errors"].append(f"call error: {e2}")

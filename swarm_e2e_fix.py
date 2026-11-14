@@ -93,7 +93,33 @@ def validate_mmd(block):
 
 
 def call_with_fallback(prompt, max_tokens=600):
-    """Call the best available model via probe_providers fallback chain."""
+    """Call the best available model.
+
+    Prefers true parallel fan-out across independent local endpoints
+    (vLLM :8000 / Ollama :11434) when any are reachable — this avoids the
+    single-worker :4000 proxy bottleneck. Falls back to the sequential
+    probe_providers() chain when no parallel endpoint is up.
+
+    Disable the parallel path with ``SWARM_PARALLEL=0``.
+    """
+    if os.environ.get("SWARM_PARALLEL", "auto").strip().lower() not in ("0", "false", "no", "off"):
+        try:
+            from swarm_parallel_runner import (
+                available_endpoints,
+                first_content,
+                run_parallel_swarm,
+            )
+
+            eps = available_endpoints()
+            if eps:
+                res = run_parallel_swarm(prompt, endpoints=eps, max_tokens=max_tokens)
+                content, src = first_content(res)
+                if content:
+                    return content, src
+                print("    parallel endpoints reachable but returned no content")
+        except Exception as e:  # noqa: BLE001 — never block the fallback
+            print(f"    parallel path skipped: {type(e).__name__}: {str(e)[:60]}")
+
     best = resolve_best_model()
     if not best:
         print("    No model available via probe_providers()")
