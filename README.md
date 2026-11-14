@@ -23,6 +23,7 @@ Consolidated research, harness, and reference for LLM agent swarms. Documents ho
 - [How Professional Swarms Do Research](#how-professional-swarms-do-research)
 - [Critical Fixes Applied (2026-11-13)](#critical-fixes-applied-2026-11-13)
 - [Known Bugs & Limitations](#known-bugs--limitations)
+- [Live Reliability Benchmark (2026-05-05)](#live-reliability-benchmark-2026-05-05)
 - [Quick Start](#quick-start)
 - [Recommendations (ordered by payoff)](#recommendations-ordered-by-payoff)
 - [Related Documents](#related-documents)
@@ -460,6 +461,53 @@ Raft/Gossip are overkill for LLM panels — you're aggregating opinions, not rep
 
 ---
 
+## Live Reliability Benchmark (2026-05-05)
+
+> **Source:** `findtorontoevents_antigravity.ca/updates/SWARM_STYLE_DIFF.MD` (parent repo) — Side-by-side comparison on identical real-world tasks.
+
+### Test 1: PR Review (4 open PRs: #798, #777, #772, #764)
+
+| System | Status | Latency | Cost | Output Quality |
+|--------|--------|---------|------|----------------|
+| **tools/swarm (deepseek)** | ✅ SUCCESS | 10.91s | $0.0016 | Structured JSON with per-PR risk classification & recommendations |
+| **ruflo swarm (github_hygiene)** | ❌ FAILED | N/A | $0.00 | HTTP 404: No endpoints found |
+
+### Test 2: GitHub Actions Failure Analysis
+
+| System | Status | Latency | Cost | Output Quality |
+|--------|--------|---------|------|----------------|
+| **tools/swarm (deepseek)** | ✅ SUCCESS | 13.24s | $0.0016 | Structured JSON: 3 failed workflows classified, 9 cancellations analyzed, pattern detection |
+| **ruflo swarm (bug_hunter)** | ❌ FAILED | N/A | $0.00 | HTTP 404: No endpoints found |
+
+### Test 3: Audit Dashboard Performance Evaluation
+
+| System | Status |
+|--------|--------|
+| **tools/swarm** | Ready (prompt created at `tools/swarm/prompts/audit_perf_review.md`) |
+| **ruflo swarm** | ❌ Both audit_researcher + audit_quant failed (HTTP 404) |
+
+### Key Finding
+
+> **tools/swarm WINS on reliability** — completed both tasks successfully with deepseek engine.  
+> **ruflo swarm FAILED 100%** — all 5 agents returned "HTTP 404: No endpoints found" from OpenRouter free tier.
+
+### Critical Caveats (Config-Dependent)
+
+⚠️ **This comparison is NOT architecture vs architecture — it's CONFIG vs CONFIG:**
+
+1. **tools/swarm ran with PAID DeepSeek key** (`deepseek-v4-flash`) — reliable, fast, structured output
+2. **Ruflo ran FREE-TIER ONLY** — no paid keys were wired into Hermes config (`~/.hermes/config.toml`)
+3. **OpenRouter free-tier models were down/rate-limited** at test time (persistent 404/429)
+4. **Hermes `chat -q --source tool --yolo` path** may have OpenRouter config issues in WSL
+
+**With paid keys wired into Hermes or `--direct` mode calling `api_consult.py` directly, re-benchmark before concluding.** The failure reflects missing configuration, not an architectural cap.
+
+**TL;DR:** tools/swarm beat Ruflo on reliability *in this specific test* because it had working paid keys while Ruflo ran free-tier-only against a down OpenRouter free tier. Fix: wire paid keys into Hermes config and add `--direct` mode to bypass WSL.
+
+---
+
+---
+
 ## Quick Start
 
 ```bash
@@ -543,6 +591,7 @@ tools/ai_menu.sh swarm
 | **What's the #1 performance problem?** | LiteLLM `--num_workers 1` serializes all swarm fan-out calls through one event loop. Fix: give each agent its own endpoint (vLLM :8000, Ollama :11434) instead of a shared proxy. |
 | **Which keys actually work in a swarm?** | Cerebras, DeepInfra, AIML API, xAI (Grok) pass tool-calls + 34k-context + chat auth. Groq 413s on 15k-token prompts (TPM 8,000). NVIDIA/SambaNova/Gemini/Together/Fireworks are dead at chat level despite `/models` returning 200. |
 | **Best research setup?** | Planner → CombineTeam (diverse providers) → Critic → Publisher, with harness-fetched retrieval (Startpage/Ecosia + frame extraction). `max_tokens >= 3000` for reasoning aliases. Expect ~3/4 on expert benchmarks even with retrieval. |
+| **Live benchmark verdict?** | tools/swarm ✅ vs Ruflo ❌ 100% failure on identical tasks — **but config-dependent**: tools/swarm used a paid DeepSeek key while Ruflo ran free-tier-only against a down OpenRouter tier. Wire paid keys into Hermes + add `--direct` mode, then re-benchmark. Full section below. |
 
 ---
 
@@ -568,6 +617,7 @@ tools/ai_menu.sh swarm
 ## Maintenance
 
 - No `README.md` existed in this repo before this file; created 2026-11-14 from `SWARM_*` research docs, `HERMES_SWARM_NOTES.MD`, `RUFLO_SWARM_GUIDE.MD`, and live provider probes. Merged content from three agent-authored versions (2026-11-14) to recover lost material.
+- **2026-11-14 benchmark merge:** Added *Live Reliability Benchmark (2026-05-05)* from the parent repo's `updates/SWARM_STYLE_DIFF.MD`, with config-dependent caveats (paid DeepSeek vs free-tier-only Ruflo). TOC + TL;DR row added.
 - Secrets: `~/dbpasses.txt` is gitignored and outside this repo; no secret values appear here — keys referenced by name only.
 - All model/provider verdicts are from live HTTP probes run 2026-11-13 from this machine; key rot is constant, re-probe before trusting.
 
