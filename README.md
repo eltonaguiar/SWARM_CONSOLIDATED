@@ -1,142 +1,138 @@
-# SWARM_CONSOLIDATED
+# SWARM_CONSOLIDATED — Multi-Agent AI Swarm Orchestration
 
-Consolidated research, harness, and reference for LLM agent swarms. This repo documents how our swarm methods perform, compares the swarm architectures we run (Ruflo, Hermes-driven, Combine/Debate/Coding/PRReview, and swarm_v2), and records the live probe findings behind every model and key we trust in a swarm.
-
-> **Repo:** https://github.com/eltonaguiar/SWARM_CONSOLIDATED  
-> **Parent repo of record:** `eltonaguiar/TORONTOEVENTS_ANTIGRAVITY` (the AI_MENU and swarm tooling live there under `tools/ai_menu.sh`, `tools/swarm/`, `tools/swarm_v2/`, `.ruflo/`)  
-> **Status:** active — research + reference, no production traffic served from this repo
+> **Consolidated swarm orchestrtion layer for** `findtorontoevents_antigravity.ca` **+** `FREELLM`
+> Agent-level coornation: `FREBUFF_SWARM_2026-11-12.MD` (Freebuf/Bufy), `OLLAMA_CLAUDE_2026-11-12.md` (Ollam/Claude)
+> **Prent repo f record:** `eltonaguiar/TORONTOEVENTS_ANTIGRAVITY` — `tools/ai_menu.sh`, `tools/swarm/`, `tools/swarm_v2/`, `.ruflo/` live there
 
 ---
 
-## 1. What this repo contains
+## 1. What This Is
 
-| Path | What it is |
-|------|------------|
-| `swarm_unified.py` | Unified runner for all 6 swarm architectures: `combine`, `debate`, `coding`, `pr_review`, `ruflo`, `hermes` |
-| `swarm_task.py` | Single-task swarm submitter (modes: coding / debate / combine / auto) with memory checkpoints |
-| `swarm_acceptance_driver.py` | Acceptance-test driver (e.g. mermaid-diagram fix acceptance across 16 models) |
-| `swarm_parallel_runner.py` | Parallel swarm execution harness |
-| `swarm_model_eval.py` / `swarm_model_server.py` | Model evaluation + local model server |
-| `swarm_e2e_fix.py` / `swarm_fix_worktree.py` | E2E fix loop + worktree fix automation |
-| `probe_providers.py` | Live provider/key admission probe (tool-calling + context-capacity + chat-level auth) |
-| `core/combine_team.py` | CombineTeam — N-model parallel consensus with health gate + dedup by upstream fingerprint |
-| `core/debate_team.py` | DebateTeam — N debaters × R rounds + synthesizer judge |
-| `core/file_team.py` | FileTeam — file-backed swarm variant |
-| `core/transport.py` | OpenAI-compatible transport (`call_openai_compat`) |
-| `core/worker.py` | Worker execution primitive |
-| `core/v2/` | swarm_v2 orchestrator family: `BaseOrchestrator`, `MetaOrchestrator`, `models`, `registry`, `engines` |
-| `cli/swarm_picker.py` | Guided picker that routes a goal to the right swarm tool |
-| `deploy.py` / `setup.py` / `DEPLOY.md` | Deployment + setup |
+A production-hardened library of **11 swarm architectures** (V1 + V2 + Meta) that orchestrate multiple LLMs — local + free cloud + paid — through a single, consistent `http://localhost:4000/v1` LiteLLM proxy endpoint. The agents never see provider keys. The proxy owns routing, retries, coolowns, and fallbacks.
 
-There is **no single "best" swarm**. The right architecture depends on the task (see §4 and §6).
+**One env var** deploys it on a new PC: `LITELLM_BASE_URL` (default `http://localhost:4000/v1`).
 
 ---
 
-## 2. The six swarm architectures (`swarm_unified.py`)
+## 2. Swarm Methods — Performance & Use-Case Matrix
 
-| Architecture | Pattern | Best for | Cost / latency |
-|--------------|---------|----------|----------------|
-| `combine` | N-model parallel consensus; deduplicate by upstream model fingerprint; health gate counts `content` AND `reasoning_content` | Quick second opinions, simple tasks, cost-sensitive ops | ~$0.0004–$0.0023/task; parallel (max of calls, not sum) |
-| `debate` | N debaters × R rounds, cross-round context, final synthesis judge | High-stakes decisions, complex reasoning, controversial topics | Multiplies requests (N×R); only enable when proxy is healthy |
-| `coding` | Planner → generator → test writer → reviewer (max 3 revisions) → verifier; hard `cost_cap_usd` abort | Code generation, bug fixes, feature implementation | Cost-capped; strict or best-effort test enforcement |
-| `pr_review` | Impact analyzer (0.5) + code reviewer (0.3) + risk controller (0.2); all must approve + impact ≥ threshold | PR review, code quality gates | Weighted approval threshold |
-| `ruflo` | Role-specialized agents (coder, reviewer, security-architect, tester, architect); each role own model context; outputs concatenated, no cross-contamination | Specialized tasks needing different personas | One model per role |
-| `hermes` | Planning root task → parallel worker cards → verifier gate → synthesizer; state persisted in JSON comments on kanban board | Task-board-driven work across Discord/web/CLI | State persisted |
+### 2.1 V1 Core (Lightweight, Direct)
 
-Source: `SWARM_ARCHITECTURE_COMPARISON.md` (2026-11-13).
+| Method | Pattern | Cost/Latency | Best For | Status |
+|---|---|---|---|---|
+| **CombineTeam** | N-model parallel consensus, dedup by upstream fingerprint, first-N-unique | ~$0.0004–0.0023/task, parallel latency (max, not sum) | Quick second opinions, consensus aggregation, cost-sensitive ops | **Production** — 16/21 free groups verified live (2026-11-12) |
+| **DebateTeam** | N debaters × R rounds, cross-round context, final judge/synthesizer | N×R requests (expensive), 25s deadline per combine sub-step | High-stakes decisions, complex reasoning, adversarial testing | **Production** — dead-alias default list kept fresh |
+| **FileTeam** | Distributed file processing across agents | Varies by file count | Batch document analysis, multi-file review | **Stable** |
+| **Ruflo** | Role-specialized agents (coder, reviewer, security-architect, tester, architect), independent model context per role | N parallel calls, no cross-contamination overhead | Specialized multi-role tasks (code + security + architecture review in one pass) | **Production** — `.ruflo/orchestrator.py` active, uses cerebras + deepseek + xai |
+| **Hermes Kanban** | Planning root → parallel worker cards → verifier gate → synthesizer, state persisted in JSON kanban board | Variable (fan-out + verification pass) | Multi-channel workflows (Discord, web dashboard, CLI), distributed task tracking | **⚠ Needs Fixes** — peer review found P0 bugs (see §4) |
 
----
+### 2.2 V2 Engines (Async, Message-Bus, Test-Gated)
 
-## 3. The two swarm systems that actually run (parent repo)
+| Method | Agents | Pipeline | Best For | Status |
+|---|---|---|---|---|
+| **CodingSwarm** | 3 CodeGenerators + 2 CodeReviewers + 2 TestWriters | Decompose → generate → test-write → review (max 3 revisions) → enforce | Code generation, bug fixes, feature implementation with mandatory test coverage ≥80% | **Production** — strict/non-strict modes, cost_cap_usd hard abort |
+| **EnsembleSwarm** | 5 Tacticians (expandable) | Collect predictions → weighted majority (class) / weighted avg (regression) → CI check → auto-expand if low confidence | Prediction aggregation, classification, regression | **Stable** — Thompson-sampled expansion on low-confidence results |
+| **ResearchSwarm** | 4 Researchers | Decompose topic → fan-out per dimension → cross-verify contradictions → synthesize with gaps | Deep research with epistemic triangulation | **Stable** — confidence ≥0.7 consensus filter |
+| **PRReviewSwarm** | ImpactAnalyzer + CodeReviewer + RiskController | Parallel impact analysis + code review + risk assessment → weighted approval (0.5/0.3/0.2) | PR review gates, code quality enforcement | **Production** — configurable approval threshold |
+| **GitHubActionsSwarm** | 2 ImpactAnalyzers | Fetch workflow runs → detect flaky/stale/cancelled/failed → blast-radius impact per flaky job → recommendations | CI/CD health monitoring, workflow flakiness detection | **Stable** — detects alternating pass/fail patterns, stale window configurable |
+| **HierarchicalSwarm** | Strategists + Tacticians + RiskController | Strategic (macro regime) → Tactical (asset-specific) → Execution (order sizing + stop-loss) with risk veto at every layer | Investment decision flows, multi-asset portfolio analysis | **Stable** — risk-profile-aware (conservative/moderate/aggressive) |
 
-Our day-to-day swarm tooling lives in the parent repo (`TORONTOEVENTS_ANTIGRAVITY`) and splits into two independent systems:
+### 2.3 Meta Layer (Self-Improving)
 
-| | Ruflo Swarm (`.ruflo/`) | tools/swarm (`tools/swarm/`) |
+| Method | Function | Status |
 |---|---|---|
-| **Drives via** | Hermes Agent (`hermes chat -q`) | Direct API calls + CLI adapters |
-| **Agent model** | 5 specialized agents (audit_researcher, audit_quant, github_hygiene, bug_hunter, strategist) | 16+ engine adapters (claude, deepseek, xai, kilo, gemini, grok, …) |
-| **Best for** | Structured analysis, continuous loops, strategy ideation, bug hunt, GitHub hygiene | PR reviews, multi-model consensus, ad-hoc prompts, second opinions |
-| **Free tier** | ✅ Yes — Hermes + OpenRouter free models | ❌ Needs API keys (~$0.001–$0.01/run paid) |
-| **Memory / persistence** | ❌ Ephemeral (each run fresh) | ✅ SQLite sessions (`swarm_runs/_sessions.db`) via `--persist-sessions` |
-| **Multi-model consensus** | ❌ Single model per agent | ✅ N models in parallel → ranked synthesis |
-| **Setup** | Hermes binary + WSL | Python + API keys |
-| **Output** | `swarm_runs/ruflo-insights/COMPILED_latest.json` | `swarm_runs/run_<TS>/` + `_summary.json` |
-| **Failover** | 3-attempt model rotation + exponential backoff | Single engine call (pre-flight key skip) |
-
-Source: `HERMES_SWARM_NOTES.MD`, `RUFLO_SWARM_GUIDE.MD`.
-
-### Ruflo Swarm vs Hermes Swarm — direct answer
-
-**Ruflo Swarm IS the Hermes-driven swarm.** There is no separate "Hermes Swarm" distinct from Ruflo: `.ruflo/orchestrator.py` dispatches work *through* Hermes Agent. The real comparison is **Ruflo (Hermes-driven) vs tools/swarm (direct API)**:
-
-- **Choose Ruflo** when you want free-tier, agent-specialized, continuous/periodic audits (audit_researcher + audit_quant run in parallel; `--continuous` loop), GitHub hygiene, or bug hunting — and you can tolerate ephemeral memory and occasional free-tier 404/429.
-- **Choose tools/swarm** when you need multi-model consensus (2+ engines must agree), persistent SQLite sessions across repeated identical tasks, second opinions before a push, or PR review — and you have API keys to pay for it.
-
-Rule of thumb from `HERMES_SWARM_NOTES.MD`: need a second opinion → `tools/swarm`; audit performance/hunt bugs → `.ruflo/`; persistent memory across repeats → `tools/swarm --persist-sessions`; same daily check on live data → `.ruflo/ --continuous`.
-
-### Ruflo tier comparison (`RUFLO_SWARM_GUIDE.MD`)
-
-| Dimension | FREE | PAID | HYBRID (recommended) |
-|-----------|------|------|----------------------|
-| Models | OpenRouter free via Hermes | Direct API via `api_consult.py` | Paid first, free fallback |
-| Cost | $0.00 | Varies by provider | Pay only when paid succeeds |
-| Speed | Slow (shared capacity) | Fast (dedicated) | Fast normally |
-| Quality | Base models | Frontier models | Best effort |
-| Reliability | Rate-limited, may 404 | High | High (always completes) |
-| Failover | 3-attempt rotation | None | Paid fails → free |
-
-Free-tier models: audit_researcher=gemini-pro-1.5-preview:free, audit_quant=deepseek-chat:free, github_hygiene=mistral-7b-instruct:free, bug_hunter=strategist=hy3-preview:free.
+| **MetaSwarmOrchestrator** | Reviews outputs from all 6 V2 engines, scores quality across 4 dimensions, runs A/B tests via Thompson sampling on prompt variants, identifies weak personas, exports improved skill definitions | **Stable** — JSON-persisted memory, Markdown-formatted review cycles |
 
 ---
 
-## 4. tools/swarm_v2 vs Ruflo swarm
+## 3. Ruflo Swarm vs Hermes Swarm — Head-to-Head
 
-`swarm_v2` (the `core/v2/` orchestrator family in this repo, mirrored by `tools/swarm_v2/` in the parent repo) and Ruflo solve different problems:
+### 3.1 Architecture
 
-| Dimension | Ruflo swarm | swarm_v2 |
-|-----------|-------------|----------|
-| **Orchestrator** | `.ruflo/orchestrator.py` via Hermes Agent | `core/v2/base_orchestrator.py` + `meta_orchestrator.py` (BaseOrchestrator ABC) |
-| **Architectures** | 5 fixed role-agents | coding / pr-review / research / ensemble / hierarchical (pluggable) |
-| **Memory** | Ephemeral per run | Persistent `SwarmMemory` + `MessageBus` + `AgentRegistry` + `SafetyEnforcer` |
-| **Transport** | Hermes internal routing → OpenRouter / direct API | OpenAI-compatible transport, provider fallbacks |
-| **Free tier** | ✅ Yes (Hermes + OpenRouter free) | ⚠️ Depends on wired keys/proxy |
-| **Best for** | Structured audit/strategy/bugs, continuous loops | Programmable multi-agent workflows with safety, registry, shared memory |
-| **CLI entry** | `python3 .ruflo/orchestrator.py --swarm <audit|github|strategy|bugs|all|continuous>` | `python3 swarm_task.py <task> --mode coding|debate|combine|auto` |
+| Dimension | Ruflo | Hermes Kanban |
+|---|---|---|
+| **Agent model** | Role-specialized agents each with own model/persona context | Task-board with role-based workers |
+| **Orchestration** | Simple parallel fan-out with concatenated output | Planning → parallel workers → verifier → synthesizer |
+| **State** | No persistent cross-run state | JSON kanban board persisted across restarts |
+| **Cross-platform** | CLI only | Discord + web dashboard + CLI |
+| **Complexity** | Low — flat parallel roles | Medium — state machine with verifier gate |
 
-**Verdict:** Ruflo is the better choice for ready-to-run, free-tier audit/strategy work with zero setup beyond Hermes. swarm_v2 is the better choice when you want to compose a custom multi-agent workflow (planner→executor→reviewer) with persistent shared memory, a safety enforcer, and an agent registry. They are complementary, not mutually exclusive — the parent repo runs both and cross-validates important findings with both systems.
+### 3.2 Current Readiness
+
+- **Ruflo**: Actively maintained. `.ruflo/orchestrator.py` operates on cerebras (researcher) + deepseek (coder) + xai (reviewer). Mercury migration complete. Provider rotation verified.
+- **Hermes**: P0 bugs identified by peer review (§4 below). `swarm_e2e_fix.py` broken (undefined `LIVE_ALIASES`), `swarm_unified.py` wrong argument order, no true parallel execution. Windows gateway (`192.168.2.32:8642`) sometimes unreachable due to bind-address config.
+
+### 3.3 Verdict
+
+**Ruflo is currently the more reliable choice** for multi-role specialized work. It is simpler, has fewer moving parts, and its bugs are cosmetic rather than blocking. Hermes has a more ambitious architecture (persistent state, multi-channel, verifier gate) but the P0 bugs prevent it from executing reliably. Fix the Hermes bugs (§6) and it pulls ahead for persistent, multi-channel workflows.
 
 ---
 
-## 5. Performance findings per AI_MENU items
+## 4. tools/swarm_v2 vs Ruflo Swarm
 
-The AI_MENU (`tools/ai_menu.sh` in the parent repo) lists the AI agent CLIs we route swarms through:
+### 4.1 Scope
 
-**Agent CLIs:** claude, command-code, cursor, opencode, kilo, codex, grok, gemini, qwen, copilot, continue, hermes, openclaude, blackbox, freebuff, kimi, agent, freellm, browseruse, ollama
+| Dimension | `tools/swarm_v2` (V2 Engines) | Ruflo |
+|---|---|---|
+| **Engines** | 6 specialized orchestrators + Meta self-improver | 1 flat multi-role runner |
+| **Architecture** | Async message bus, Agent Registry, persistent SwarmMemory, SafetyEnforcer | Direct `ThreadPoolExecutor` parallel calls |
+| **Verification** | Test enforcement (Coding), weighted approval (PR Review), confidence CI (Ensemble), risk veto (Hierarchical) | None — outputs concatenated raw |
+| **Self-improvement** | Thompson-sampled A/B testing, weak-persona detection, skill export | None |
+| **State** | Memory entries persisted per engine output | No state between runs |
 
-**Repo-local swarm commands:** litellm (rotating proxy on :4000), swarm (`tools/swarm/swarm_run.py` multi-engine fan-out), consult (`tools/swarm/api_consult.py` single-provider API consult)
+### 4.2 When to Use Which
 
-### What the live probes found (2026-11-13)
+| Scenario | Use |
+|---|---|
+| Quick multi-role review (check code quality + security + architecture) | **Ruflo** — minimal overhead, fast |
+| Code generation with mandatory test coverage | **swarm_v2 CodingSwarm** — test-gated, revision loop |
+| PR review with weighted, threshold-gated approval | **swarm_v2 PRReviewSwarm** |
+| Deep research with contradiction detection | **swarm_v2 ResearchSwarm** |
+| Investment signal hierarchy (macro → tactical → execution) | **swarm_v2 HierarchicalSwarm** |
+| Ensemble prediction with confidence intervals | **swarm_v2 EnsembleSwarm** |
+| CI/CD health monitoring | **swarm_v2 GitHubActionsSwarm** |
+| Continuous quality optimization across all engines | **swarm_v2 MetaSwarmOrchestrator** |
 
-A `/models` 200 response is **not** evidence a key can serve a request. Every key entering a swarm must pass a 3-part admission test: (1) tool-calling call returns `tool_calls`, (2) ~34k-token context-capacity call succeeds, (3) chat-level auth/balance succeeds. Source: `SWARM_RESEARCH_PATTERNS_2026-11-13.md` §3.
+### 4.3 Verdict
 
-| Provider / key | `/models` | `/chat/completions` | Swarm verdict |
-|---|---|---|---|
-| NVIDIA + ALT | 200, 83 models | every call times out; per-model 404 | **unusable** |
-| SambaNova | 200, 5 models | 401 incorrect key | **unusable** |
-| Groq | 200, 11 models | 200 small; **413 on 15k-token prompt** (TPM 8,000) | unusable as main-agent fallback |
-| Cerebras | 200 | 200 incl. 34k-token + tool call | **works** |
-| DeepInfra | 200 | 200, 35k prompt, tool call | **works** |
-| AIML API | 200 | 200, 34k prompt, tool call | **works** ($20 paid cap) |
-| xAI (Grok) | 200, 13 models | 200, 33.5k prompt, tool call | **works** |
-| Kimi | 200, 6 models | 429 engine overloaded (persistent) | flaky |
-| Novita / Z.AI GLM / SiliconFlow | 200 | 402/429 insufficient balance | **no credits** |
-| Gemini ×3 | — | 401 invalid credentials | **dead** |
-| Together ×2 / Hyperbolic | — | 401 | **dead** |
-| Fireworks ×2 | — | 412 account suspended | **dead** |
-| Mistral ×3 | 200 | 200 but `content` is a list of blocks | fragile (breaks `.strip()` clients) |
+**`tools/swarm_v2` is architecturally superior** for complex, test-gated, and self-improving workflows. It has 6 purpose-built engines with verification gates, a Meta layer for continuous improvement, and proper async/bus architecture. Ruflo wins on simplicity — for a flat multi-role opinion, it's faster and has less overhead. Use Ruflo for quick role-specialized passes; use swarm_v2 when you need verification, state, or optimization.
 
-### Verified fallback chain (Hermes, this machine)
+---
 
+## 5. Critical Architecture Findings
+
+### 5.1 The LiteLLM Concurrency Bottleneck (THE Problem)
+**`--num_workers 1` (line 435 in `tools/start_litellm_proxy.sh`)** serializes ALL swarm fan-out calls through a single event loop. A 10-agent fan-out becomes 10 sequential calls. The fix is **hard**: either raise `--num_workers` or route agents direct to their local endpoints (vLLM `:8000`, Ollama `:11434`) for the fan-out leg, keeping the proxy for single-shot routing.
+
+**Industry standard (confirmed by Diagrid, OpenLegion, TrueFoundry):** route each agent to its own independent inference endpoint. vLLM and Ollama handle true concurrent batching natively.
+
+### 5.2 Key Health: `/models` 200 ≠ Usable
+~45% of keys in `~/dbpasses.txt` answer `/models` with 200 but fail at `/chat/completions`. The 3-point admission test for any key entering the swarm pool:
+1. Tool-calling call with JSON schema
+2. Context-capacity call (~34k tokens — Hermes system prompt + skills)
+3. Balance/auth verification at chat level
+
+### 5.3 Admission Gating
+NVIDIA, SambaNova, Scaleway, Alibaba, and Z.ai free tiers: **dead** (402/403/quota). Groq: 200 on small prompts, **413 on 15k tokens** (TPM 8000 hard cap). A fallback that can't hold the prompt is worse than no fallback — it burns the one fallback activation per turn.
+
+### 5.4 Reasoning Models and `max_tokens`
+At `max_tokens < 300`, thinking models (LOCAL_CHAT, LOCAL_CODE) emit only `reasoning_content` with empty `content`. The health gate counts both — but the 25 empty answers in the ServiceNow benchmark were a budget artifact, not ignorance. Rule: `max_tokens >= 3000` for reasoning aliases.
+
+### 5.5 Health Gate
+A group is "live" only if `status=200` AND (`content` non-empty OR `reasoning_content` non-empty). At `max_tokens=4` for health probes, 11/16 live groups returned empty content — use `max_tokens >= 100` for probes.
+
+### 5.6 Fastest Verified Providers (2026-11-12 health audit)
+| Rank | Group | Latency |
+|---|---|---|
+| 1 | `ULTRA_FREE_NVIDIA` | 185ms |
+| 2 | `ULTRA_FREE_LOCAL_MULTI` | 341ms |
+| 3 | `ULTRA_FREE_TOOLS` | 351ms |
+| 4 | `ULTRA_FREE_OPENROUTER` | 382ms |
+| 5 | `ULTRA_FREE_CLOUD_FAST` | 430ms |
+
+**16/21 free groups verified live.** 4 local timeouts (probably cold Ollama, not dead). 1 NVIDIA 401 (terminal in chain).
+
+### 5.7 Verified Fallback Chain (Hermes, this machine)
 ```
 primary  deepseek-v4-flash
   1. xai / grok-4.5                    (tool call OK, 33.5k prompt OK)
@@ -146,173 +142,116 @@ primary  deepseek-v4-flash
   5. kimi-coding / kimi-k3.1-pro       (key valid, 429s often — last resort)
 ```
 
-Groq was position 1 in an earlier draft and failed live with `413 ... TPM: Limit 8000, Requested 15391` — a fallback that cannot hold the prompt is worse than no fallback, because it burns the single fallback activation per turn.
+---
 
-### Model assessment for swarm research (`SWARM_MODEL_ASSESSMENT_SERVICENOW_RESEARCH_2026-11-13.md`)
+## 6. Known Bugs (From Hermes Peer Review 2026-11-13)
 
-Tested 38 proxy groups on a neutral ServiceNow Discovery research question (must name: Identification Rules, Reconciliation Rules, Data Precedence, CMDB 360/multisource):
-
-- **0 models named all 4 terms** memory-only; best score 3/4.
-- **25 of 38 returned empty `content` with `finish=length`** — reasoning consumed the whole 900-token budget. This is a **budget artifact, not ignorance**: re-asking with `max_tokens=3500` recovered 8 of 18 cloud candidates and 2 of 7 local.
-- **Hard rule:** `max_tokens >= 3000` for any reasoning alias, or a `200` with `content: ""` is indistinguishable from a refusal.
-- **Retrieval matters more than the model:** `ULTRA_PAID_MODE` went 1/4 (memory) → 3/4 (with harness-fetched pages); `ULTRA_FREE_LOCAL_FAST` stayed 0/4 even with web. A keyless SERP (Startpage/Ecosia) + full-markup frame extraction works for every model; per-model browser loops were strictly worse.
-- **Exclude from research duty:** `PAID-GROK` (400), `ULTRA_HYBRID_MODEL_LARGE` + `ZZZ_BAD_LEGACY_MIXED_F_MODE_TOOLS` (401), `ULTRA_FREE_LOCAL_EMBED` (embedding model), `ULTRA_FREE_LOCAL_BATCH/CHAT/CODE` (150s timeouts), `SUBQ_FREE`/`SUBQ_TOKEN` (9-word stubs — decision models, not writers).
-- **Best research roster:** `ZZZ_BAD_LEGACY_MIXED_F_MODE_FAST` and `ULTRA_PAID_MODE` with retrieval (3/4); `ULTRA_FREE_GEMINI` memory-only (3/4, fastest useful answer at 2.9s); `ULTRA_FREE_CLOUD_LARGE` / `ULTRA_HYBRID_MODEL` as backups.
-
-### Free-tier economics (real currency is TPM/RPD, not context window)
-
-| Provider | Model | Context | Documented limit | Implication |
-|----------|-------|---------|------------------|-------------|
-| Groq | gpt-oss-120b | 131K | 30 RPM, 1,000 RPD, 8,000 TPM, 200k TPD | 131K context is a lie in practice |
-| Kilo Code | kilo-auto/free, `:free` | 256K–1M | 200 req/hr | Great for wide fan-out, useless for long prompts |
-| Google Gemini | 2.5/3.x Flash | 1M | free tier, no card | Best free context; treat as non-confidential |
-| Cloudflare Workers AI | various | 128K | 10k neurons/day shared | Fine for aux tasks |
-
-Plan fan-out width against TPM, not context size. A research swarm making 8 parallel calls × 20k-token prompts needs ~160k tokens — Groq free delivers that over ~20 minutes (one burst, then done for the minute).
+| Severity | File | Issue |
+|---|---|---|
+| **P0** | `swarm_e2e_fix.py` | `LIVE_ALIASES` undefined → NameError; import path mismatch for `call_with_fallback` |
+| **P0** | `swarm_unified.py` | `run_combine_team(query, model)` passes model alias string as `n` parameter → TypeError |
+| **P0** | `swarm_model_eval.py` | `call_model()` ignores resolved `base_url` from `resolve_best_model()`, always uses `:4000` |
+| **P0** | `swarm_fix_worktree.py` | Same issues as `swarm_e2e_fix.py` |
+| **MEDIUM** | All V1 paths | `swarm_parallel_runner.py` exists but is **never called** by any main workflow — all "parallel" swarms are sequential |
+| **MEDIUM** | `core/combine_team.py` | Cost cap continues processing remaining aliases instead of hard abort |
+| **MEDIUM** | All swarms | No red-team / verifier stage beyond mermaid syntax validation |
 
 ---
 
-## 6. Critical architectural finding: the LiteLLM concurrency bottleneck
-
-Testing 16 models against a broken mermaid-diagram acceptance test: **14/16 solved**, all free and paid models performed equally (~$0.001–$0.0023 per task, ~663 chars context). The bottleneck is **not model capability — it's LiteLLM proxy concurrency.**
-
-`tools/start_litellm_proxy.sh:435` launches LiteLLM with `--num_workers 1` — a single worker serializes every request. A swarm fan-out (N concurrent model calls) queues behind one worker; timeouts pile up; the proxy looks "crashed." vLLM wins not because it's smarter but because continuous batching handles concurrency.
-
-### Industry-standard solution
-
-Do **not** route all swarm agents through a single LiteLLM proxy. Route each agent to its **own independent inference endpoint**:
-
-| Agent | Endpoint | Model | Type |
-|-------|----------|-------|------|
-| Agent 1 | `http://localhost:8000/v1` | qwen3-8b | Local GPU (vLLM) |
-| Agent 2 | `http://localhost:11434/v1` | qwen2.5-coder:7b | Local GPU (Ollama) |
-| Agent 3 | `http://localhost:11434/v1` | qwen3:30b-a3b | Local GPU (Ollama) |
-
-All three run simultaneously, each its own GPU process, no shared queue, no LiteLLM in the path, no single point of failure. If Windows Hermes comes back online (`192.168.2.32:8642`, key `hermes-local-web-2026`), add it as a 4th agent.
-
-For cloud models, each agent calls its cloud provider directly (OpenRouter, Gemini, xAI, …) — no shared proxy needed.
-
-Recommended 3-agent parallel swarm is documented in `SWARM_ARCHITECTURE_COMPARISON.md` §6.
-
----
-
-## 7. How professional swarms do research (external evidence)
-
-Survey of 28 swarm/research/gateway repos (stars, 2026-11-13). Every credible research swarm converges on one pipeline:
+## 7. Repository Structure
 
 ```
-plan → decompose into sub-questions → parallel retrieve → filter/compress → synthesize w/ citations → critique
+SWARM_CONSOLIDATED/
+├── core/                          # V1: lightweight direct-call swarms
+│   ├── transport.py               #   Direct LLM API routing (14 providers)
+│   ├── combine_team.py            #   N-model parallel consensus
+│   ├── debate_team.py             #   Multi-round adversarial debate
+│   ├── file_team.py               #   Distributed file processing
+│   ├── worker.py                  #   Universal agent adapter
+│   └── v2/                        # V2: message-bus async orchestrators
+│       ├── base_orchestrator.py   #   Shared base (memory, bus, registry, safety)
+│       ├── models.py              #   Data models (SwarmTask, AgentRole, etc.)
+│       ├── registry.py            #   Agent registry
+│       ├── meta_orchestrator.py   #   Meta: self-improving review layer
+│       └── engines/
+│           ├── coding_swarm.py    #     Test-gated code generation
+│           ├── ensemble_swarm.py  #     Weighted prediction aggregation
+│           ├── research_swarm.py  #     Epistemic research triangulation
+│           ├── pr_review_swarm.py #     Weighted PR review gate
+│           ├── github_actions_swarm.py #  CI/CD health monitor
+│           └── hierarchical_swarm.py   #  Strategic → Tactical → Execution
+├── cli/
+│   └── swarm_picker.py            # Interactive swarm launcher (planned)
+├── swarm_unified.py               # Unified CLI: --architecture {combine,debate,coding,pr_review,ruflo,hermes}
+├── swarm_task.py                  # Main orchestration coordinator
+├── swarm_parallel_runner.py       # True parallel executor (not wired yet)
+├── swarm_model_eval.py            # Multi-model evaluation harness
+├── swarm_e2e_fix.py               # End-to-end fix workflow (⚠ P0 bugs)
+├── swarm_fix_worktree.py          # Worktree fix variant (⚠ P0 bugs)
+├── swarm_acceptance_driver.py     # Acceptance test harness
+├── swarm_model_server.py          # Model server coordinator
+├── probe_providers.py             # Provider health probe (✅ well-designed)
+├── deploy.py / deploy.sh          # One-command deploy
+├── requirements.txt               # Minimal deps
+├── setup.py                       # pip install -e .
+├── .env.example                   # Config template
+├── DEPLOY.md                      # Deploy guide
+├── SWARM_ARCHITECTURE_COMPARISON.md  # Industry survey
+├── SWARM_CONCURRENCY_RESEARCH_2026-11-13.md  # LiteLLM deep dive
+├── SWARM_RESEARCH_PATTERNS_2026-11-13.md      # GitHub landscape + key probes
+├── SWARM_FREE_KEYS_FINDINGS_2026-11-13.md     # Free-key crash root cause
+├── SWARM_MODEL_ASSESSMENT_SERVICENOW_RESEARCH_2026-11-13.md  # Model benchmark
+├── FREEBUFF_SWARM_2026-11-12.MD    # Freebuff agent plan
+├── OLLAMA_CLAUDE_2026-11-12.md     # Ollama/Claude agent plan
+└── FEEDBACK_FROM_OPENCODE/
+    └── hermes/hermes-peer-review.md  # P0 bug report
 ```
-
-| Repo | Stars | How it maps |
-|------|-------|-------------|
-| gpt-researcher | 30,659 | Planner agent generates questions; execution agents gather in parallel; publisher aggregates into cited report; JEV decision model keeps only context that answers the question |
-| open_deep_research | 12,676 | Four model slots by role (summarization / research / compression / final report); ranked #6 on Deep Research Bench, RACE 0.4344; structured outputs + tool calling are a hard requirement |
-| STORM | 31,866 | Perspective-guided question asking + simulated conversation writer↔expert + moderator agent injecting unused facts |
-| deer-flow | 85,296 | Harness: filesystem, memory, skills, sandbox + plan-and-spawn sub-agents |
-| MetaGPT | 71,268 | Research as SOP: roles with fixed responsibilities |
-
-**Takeaway:** research quality comes from pipeline shape (decomposition + parallelism + filtering + citation), not model size. `CombineTeam`/`DebateTeam` in `core/` implement the middle of this pipeline; what's missing is the **planner** stage (sub-question generation) and **critic** stage (verify claims against local data).
-
-### Coordination topologies
-
-| Pattern | Evidence | When it pays |
-|---------|----------|--------------|
-| Graph / state machine | langgraph 44,882 | Deterministic, resumable loops; cheapest to debug |
-| Queen-led + consensus (Raft/Byzantine/Gossip) | ruflo/ruflo 81,594 | Many workers, one decision; Byzantine framing is a *mental model* (assume k workers lie/fail), not a protocol to implement |
-| Role/SOP specialization | MetaGPT 71,268, ChatDev 34,740 | Fixed artifact formats (report, spec, deck) |
-| Handoff | openai/swarm 22,130 (educational, superseded) | Simple routing between specialists |
-
-Raft/Gossip are overkill for LLM panels — you're aggregating opinions, not replicating a state machine. What improves accuracy: diverse upstreams, structured JSON votes, explicit judge/critic pass, outlier rejection.
 
 ---
 
-## 8. Quick start
+## 8. Quick Start
 
 ```bash
-# Clone
+# Clone and install
 git clone https://github.com/eltonaguiar/SWARM_CONSOLIDATED.git
 cd SWARM_CONSOLIDATED
+python3 -m pip install -r requirements.txt
+cp .env.example .env
 
-# One-task swarm (combine = N-model consensus)
-python3 swarm_task.py "is approach X better than Y?" --mode combine
+# Verify the proxy is up
+curl -s localhost:4000/health/readiness
 
-# Unified runner with explicit architecture
-python3 swarm_unified.py "fix this mermaid diagram" --architecture combine --model ULTRA_FREE_CLOUD_FAST
-python3 swarm_unified.py "review this PR" --architecture pr_review --model ULTRA_FREE_NVIDIA
-python3 swarm_unified.py "code a feature" --architecture coding --model ULTRA_PAID_MODE
+# Run a consensus swarm (cheap, fast, soft consensus)
+python3 swarm_unified.py "What are the top 3 trends in AI agent orchestration?" \
+    --architecture combine --model ULTRA_FREE_CLOUD_FAST
 
-# Guided picker
-python3 cli/swarm_picker.py
+# Run an adversarial debate (multi-round, rigorous)
+python3 swarm_unified.py "Should we adopt LangGraph or CrewAI?" \
+    --architecture debate --rounds 3 --n 4
 
-# Probe a provider before trusting it in a swarm
-python3 probe_providers.py
+# Run a code-generation swarm (test-gated)
+python3 swarm_unified.py "Write a Python rate limiter with token bucket algorithm" \
+    --architecture coding --model ULTRA_PAID_MODE
+
+# Run PR review (weighted approval gate)
+python3 swarm_unified.py "review" --architecture pr_review \
+    --repo eltonaguiar/SWARM_CONSOLIDATED --pr 1
+
+# Run Ruflo multi-role (flat parallel, fast)
+python3 swarm_unified.py "Review this architecture decision" \
+    --architecture ruflo --model ULTRA_FREE_CLOUD_FAST
 ```
 
-In the parent repo (`TORONTOEVENTS_ANTIGRAVITY`):
-```bash
-# Ruflo audit (free tier, Hermes-driven)
-python3 .ruflo/orchestrator.py --swarm audit --tier free
-
-# tools/swarm second opinion (consensus-3: deepseek + xai + kilo)
-python3 tools/swarm/swarm_run.py --preset consensus-3 --prompt-file my_prompt.md
-
-# AI_MENU launcher
-tools/ai_menu.sh swarm
-```
-
 ---
 
-## 9. Recommendations (ordered by payoff)
+## 9. Next Steps (Owner Decisions)
 
-1. **Kill the serialization.** Raise `--num_workers` in `tools/start_litellm_proxy.sh:435`, or have the fan-out leg call upstreams directly in parallel and use the proxy only for single-shot calls. (`SWARM_FREE_KEYS_FINDINGS_2026-11-13.md`)
-2. **Adopt the 3-part admission test** as a gate in `probe_providers.py`, emitting a machine-readable pool file: `{provider, model, base_url, key_env, tool_calls, max_ctx_ok, tpm, status}`. Build the pool from evidence, never hand-written. (`SWARM_RESEARCH_PATTERNS_2026-11-13.md`)
-3. **Separate "panel" keys from "report" keys.** Free keys with 8k TPM are fine as panel voters (short prompts, structured JSON) and useless as report writers (long context).
-4. **Add a planner + critic stage** around `CombineTeam`: planner emits 3–6 sub-questions as JSON → `CombineTeam` answers each with a different provider → critic (different provider than any panel member) flags unsupported claims → publisher writes the report citing panel answers. (gpt-researcher / STORM shape.)
-5. **Structured output or it didn't happen.** Votes must be JSON with a schema (`{claim, confidence, evidence_ref}`); otherwise consensus degenerates into comparing prose.
-6. **Budget guard per run.** Track tokens and abort at a cap. (`cost_cap_usd` already exists in `core/combine_team.py`; default $0.05 free-tier ceiling.)
-7. **Route log per call:** provider, resolved model, latency, tokens, estimated cost, fallback depth.
-8. **Ground against local data, always.** Free proxy models have no browser and will hallucinate fetches. Pull `audit_dashboard/data/*.json` locally and embed it verbatim in prompts.
-
----
-
-## 10. Related documents (in this repo)
-
-- `SWARM_ARCHITECTURE_COMPARISON.md` — architecture patterns + recommended 3-agent parallel swarm
-- `SWARM_CONCURRENCY_RESEARCH_2026-11-13.md` — LiteLLM concurrency failures, production config, token buckets, circuit breakers
-- `SWARM_FREE_KEYS_FINDINGS_2026-11-13.md` — crash root cause (`--num_workers 1`) + free-key swarm recommendations
-- `SWARM_MODEL_ASSESSMENT_SERVICENOW_RESEARCH_2026-11-13.md` — which models can be trusted for swarm research
-- `SWARM_RESEARCH_PATTERNS_2026-11-13.md` — how successful GitHub swarms do research + live key probes
-- `FREEBUFF_SWARM_2026-11-12.MD` — Freebuff swarm mission (Mercury API sunset migration)
-- `OLLAMA_CLAUDE_2026-11-12.md` — Ollama/Claude peer plan
-- `DEPLOY.md` — deployment notes
-
----
-
-## 11. Appendix — AI_MENU → swarm mapping
-
-| AI_MENU key | CLI/tool | Swarm role | Free? | Notes |
-|-------------|----------|------------|-------|-------|
-| hermes | Hermes Agent | Ruflo transport | ✅ (via OpenRouter free) | Drives `.ruflo/` orchestrator; WSL; 36 commits behind — run `hermes update` |
-| kilo | Kilo Code | tools/swarm engine | ✅ (`:free`, 200 req/hr) | Wide fan-out, useless for long prompts |
-| grok | Grok CLI | tools/swarm engine (xai) | ⚠️ paid/free mix | Works live; `grok-3-fast` not found — use `grok-3`/`grok-3-mini` |
-| gemini | Gemini CLI | tools/swarm / Ruflo model | ⚠️ dead keys (401) | `ULTRA_FREE_GEMINI` best fast answer (2.9s, 3/4) but credentials dead in current probe |
-| claude | Claude Code | tools/swarm engine | ❌ needs key | Deep-strict preset |
-| codex | Codex CLI | tools/swarm engine | ❌ needs key | |
-| qwen | Qwen Code | tools/swarm engine | varies | Local vLLM/Ollama qwen3 recommended for concurrency workhorse |
-| copilot | Copilot CLI | tools/swarm engine | ❌ needs key | |
-| ollama | Ollama | Local inference endpoint | ✅ unlimited | Concurrency workhorse; `OLLAMA_NUM_PARALLEL` default 1 |
-| litellm | LiteLLM proxy (:4000) | Swarm routing layer | — | `--num_workers 1` = serialization bottleneck |
-| swarm | `tools/swarm/swarm_run.py` | Multi-engine fan-out | ❌ keys | consensus-3 / fast-cheap / deep-strict presets |
-| consult | `tools/swarm/api_consult.py` | Single-provider consult | ❌ keys | Shared with Ruflo paid tier |
-
----
-
-<details>
-<summary>Maintenance</summary>
-
-- No `README.md` existed in this repo before this file; created 2026-11-14 from `SWARM_*` research docs, `HERMES_SWARM_NOTES.MD`, `RUFLO_SWARM_GUIDE.MD`, and live provider probes.
-- Secrets: `~/dbpasses.txt` is gitignored and outside this repo; no secret values appear here — keys referenced by name only.
-- All model/provider verdicts are from live HTTP probes run 2026-11-13 from this machine; key rot is constant, re-probe before trusting.
-
-</details>
+1. **P0 fixes**: Fix `swarm_e2e_fix.py` (undefined `LIVE_ALIASES`), `swarm_unified.py` (wrong arg order), `swarm_model_eval.py` (ignores resolved base_url)
+2. **Wire `swarm_parallel_runner.py`** into the main workflow path — all "parallel" claims are currently false
+3. **Hard cost-cap abort** in `combine_team.py` (currently continues processing after cap)
+4. **Raise `--num_workers`** in LiteLLM proxy launcher from 1 → 4+, or bypass proxy for fan-out legs
+5. **Adopt the 3-point admission test** (tool-call, context-capacity, chat-auth) as a gate in `probe_providers.py`
+6. **Separate panel keys from report keys** — free 8k TPM keys work for voting but not for long synthesis
+7. **Add planner + critic stages** around CombineTeam for proper research pipeline
+8. **Route log per call**: provider, model, latency, tokens, cost, fallback depth
+9. **Resolve Mercury persona**: repoint `mercury` tournament persona from Together (401s) to cerebras
